@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aidm"
+version = "1.0.0"
+description = "A flexible, provider-agnostic AI-powered text RPG system"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    {name = "Mitchell"}
+]
+dependencies = [
+    "anthropic>=0.40.0",
+    "openai>=1.0.0",
+    "requests>=2.31.0",
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.20.0",
+    "websockets>=11.0",
+    "llama-cpp-python>=0.3.0",
+    "huggingface-hub>=0.20.0",
+    "hf_transfer",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+]
+
+[project.scripts]
+aidm = "run:main"
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

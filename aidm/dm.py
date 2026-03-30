@@ -1,0 +1,785 @@
+#!/usr/bin/env python3
+"""
+Universal AI Dungeon Master
+Works with Claude, OpenAI, Ollama, LM Studio, or any provider
+"""
+
+import re
+import sys
+import threading
+import time
+from typing import List, Dict, Tuple
+from .dice import DiceRoller
+from .gamestate import GameState, Character
+from .llm_providers import LLMProvider, create_provider, list_available_providers
+
+
+class UniversalDM:
+    """Dungeon Master that works with any LLM provider"""
+    
+    def __init__(self, provider: LLMProvider):
+        self.provider = provider
+        self.state = GameState()
+        self.dice = DiceRoller()
+        self.conversation = []
+        # High-level turn log: [{role: 'user'|'assistant', content: str}, ...]
+        # Maps 1:1 with visible UI messages (player action, DM response).
+        # Internal follow-up calls (dice roll results) are NOT separate turns.
+        self.turns: List[Dict] = []
+        
+    def get_system_prompt(self) -> str:
+        """System prompt that teaches any LLM to be a DM"""
+        return """You are a dungeon master for a tabletop RPG. Be creative, fair, and engaging.
+
+IMPORTANT RULES:
+- Challenge players with meaningful choices and risks
+- NPCs have their own goals and may refuse or betray the player
+- Say "no" to unreasonable actions - don't let players succeed at everything
+- Create consequences for player actions
+- Make the world feel alive and reactive
+
+DICE ROLLS AND OUTCOMES:
+When you need dice rolls, use this EXACT format:
+ROLL: [character_name] [stat] DC [number] | [reason]
+Example: ROLL: goblin dexterity DC 12 | dodging arrow
+
+CRITICAL: After requesting rolls, you will receive the results. You MUST then:
+1. Describe the outcome based on success/failure
+2. Continue the action (enemy attacks, environment reacts, etc.)
+3. In combat, NPCs/enemies get their turn after the player
+
+DO NOT describe the outcome before you know the roll result.
+DO NOT leave the player hanging - always resolve what happens.
+DO NOT forget enemy turns in combat.
+
+COMBAT FLOW:
+1. Player declares action → Request roll if needed
+2. Receive roll result → Describe player's action outcome
+3. Enemy/NPC responds → Request their rolls if needed  
+4. Describe full round result
+Example: "Your sword misses (roll failed). The goblin seizes the opening and lunges at you. ROLL: goblin dexterity DC 13 | attacking"
+
+NPC CREATION:
+Use this EXACT format:
+NPC: [name] | [brief description] | [motivation]
+Example: NPC: Grimwald | rotund merchant with silver rings | maximize profit
+
+DAMAGE AND HEALING:
+Use this EXACT format:
+DAMAGE: [character] [amount]
+HEAL: [character] [amount]
+Example: DAMAGE: player 5
+
+CHARACTER THOUGHTS:
+Show what characters are thinking using this EXACT format:
+THINK: [character_name] | [inner thought]
+Example: THINK: Grimwald | This adventurer seems gullible... I could double the price.
+Use 1-2 THINK lines per response for key NPCs/PCs reacting to events. Keep thoughts brief.
+
+Keep responses under 200 words. Be descriptive but concise."""
+
+    def build_context(self, player_action: str) -> str:
+        """Build context for the LLM including game state"""
+        parts = ["=== GAME STATE ==="]
+        
+        # Combat status
+        if self.state.in_combat:
+            parts.append(f"\n⚔️  COMBAT ACTIVE (Turn {self.state.turn_count})")
+            parts.append(f"Participants: {', '.join(self.state.combat_participants)}")
+            parts.append("Remember: After player action, enemies/NPCs take their turn!")
+        
+        # Characters
+        parts.append("\nCHARACTERS:")
+        for char in self.state.characters.values():
+            role = "PLAYER" if char.is_player else "NPC"
+            parts.append(f"- {char.name} ({role}): HP {char.hp}/{char.max_hp}")
+            parts.append(f"  STR {char.stats['strength']}({char.get_modifier('strength'):+d}) "
+                        f"DEX {char.stats['dexterity']}({char.get_modifier('dexterity'):+d}) "
+                        f"CON {char.stats['constitution']}({char.get_modifier('constitution'):+d})")
+            if char.description:
+                parts.append(f"  {char.description}")
+            if char.motivations:
+                parts.append(f"  Wants: {', '.join(char.motivations)}")
+                
+        # Location
+        if self.state.current_location:
+            parts.append(f"\nLOCATION: {self.state.current_location}")
+            if self.state.current_location in self.state.locations:
+                loc = self.state.locations[self.state.current_location]
+                parts.append(loc['description'])
+                
+        # Recent history
+        if self.state.history:
+            parts.append("\nRECENT EVENTS:")
+            for entry in self.state.history[-3:]:
+                parts.append(f"- {entry['entry']}")
+                
+        parts.append(f"\n=== PLAYER ACTION ===\n{player_action}")
+        
+        return '\n'.join(parts)
+    
+    def parse_commands(self, response: str) -> Tuple[str, List[Dict]]:
+        """Extract game commands from LLM response"""
+        commands = []
+        narrative = response
+        
+        # Extract roll requests - supports multi-word names like "Captain Bran"
+        roll_pattern = r'ROLL:\s*(.+?)\s+(strength|dexterity|constitution|intelligence|wisdom|charisma)\s+DC\s+(\d+)\s*\|\s*(.+?)(?:\n|$)'
+        for match in re.finditer(roll_pattern, response, re.MULTILINE | re.IGNORECASE):
+            char_name, stat, dc, reason = match.groups()
+            commands.append({
+                'type': 'roll',
+                'character': char_name.strip(),
+                'stat': stat.lower(),
+                'dc': int(dc),
+                'reason': reason.strip()
+            })
+            narrative = narrative.replace(match.group(0), '')
+            
+        # Extract NPC creation
+        npc_pattern = r'NPC:\s*([^|]+)\|\s*([^|]+)\|\s*(.+?)(?:\n|$)'
+        for match in re.finditer(npc_pattern, response, re.MULTILINE):
+            name, desc, motivation = match.groups()
+            commands.append({
+                'type': 'npc',
+                'name': name.strip(),
+                'description': desc.strip(),
+                'motivation': motivation.strip()
+            })
+            narrative = narrative.replace(match.group(0), '')
+            
+        # Extract damage/heal - supports multi-word names like "Captain Bran"
+        for match in re.finditer(r'DAMAGE:\s*(.+?)\s+(\d+)(?:\n|$)', response):
+            commands.append({
+                'type': 'damage',
+                'target': match.group(1).strip(),
+                'amount': int(match.group(2))
+            })
+            narrative = narrative.replace(match.group(0), '')
+            
+        for match in re.finditer(r'HEAL:\s*(.+?)\s+(\d+)(?:\n|$)', response):
+            commands.append({
+                'type': 'heal',
+                'target': match.group(1).strip(),
+                'amount': int(match.group(2))
+            })
+            narrative = narrative.replace(match.group(0), '')
+
+        # Extract character thoughts
+        for match in re.finditer(r'THINK:\s*([^|]+)\|\s*(.+?)(?:\n|$)', response, re.MULTILINE):
+            commands.append({
+                'type': 'thought',
+                'character': match.group(1).strip(),
+                'text': match.group(2).strip()
+            })
+            narrative = narrative.replace(match.group(0), '')
+            
+        return narrative.strip(), commands
+    
+    def execute_commands(self, commands: List[Dict]) -> List[str]:
+        """Execute game commands and return results"""
+        results = []
+        
+        for cmd in commands:
+            if cmd['type'] == 'roll':
+                char = self.state.get_character(cmd['character'])
+                if char:
+                    modifier = char.get_modifier(cmd['stat'])
+                    roll_result = self.dice.check(modifier, cmd['dc'])
+                    success = "SUCCESS" if roll_result['success'] else "FAILURE"
+                    results.append(
+                        f"🎲 {cmd['character']} {cmd['stat']} check (DC {cmd['dc']}): "
+                        f"{roll_result['total']} - {success}"
+                    )
+                    self.state.add_to_history(
+                        f"{cmd['character']} {cmd['reason']}: {success}",
+                        roll_result
+                    )
+                    
+            elif cmd['type'] == 'npc':
+                npc = Character(
+                    cmd['name'],
+                    description=cmd['description'],
+                    motivations=[cmd['motivation']],
+                    is_player=False
+                )
+                self.state.add_character(npc)
+                results.append(f"✨ Created NPC: {cmd['name']}")
+                
+            elif cmd['type'] == 'damage':
+                char = self.state.get_character(cmd['target'])
+                if char:
+                    char.take_damage(cmd['amount'])
+                    results.append(f"⚔️ {cmd['target']} takes {cmd['amount']} damage (HP: {char.hp}/{char.max_hp})")
+                    
+            elif cmd['type'] == 'heal':
+                char = self.state.get_character(cmd['target'])
+                if char:
+                    char.heal(cmd['amount'])
+                    results.append(f"💚 {cmd['target']} heals {cmd['amount']} HP (HP: {char.hp}/{char.max_hp})")
+
+            elif cmd['type'] == 'thought':
+                # Thoughts don't change game state; just surface them
+                results.append(f"💭 {cmd['character']}: {cmd['text']}")
+                    
+        return results
+    
+    def _stream_generate(self, system_prompt: str, user_message: str,
+                          conversation_history=None) -> str:
+        """Call provider with streaming, print tokens live, return full text."""
+        full = []
+        start = time.perf_counter()
+        first_token = True
+        stop_timer = threading.Event()
+
+        def _tick():
+            """Update a live elapsed-time counter until the first token arrives."""
+            while not stop_timer.is_set():
+                elapsed = time.perf_counter() - start
+                sys.stdout.write(f"\r⏳ Waiting... {elapsed:.1f}s")
+                sys.stdout.flush()
+                stop_timer.wait(0.1)
+
+        timer_thread = threading.Thread(target=_tick, daemon=True)
+        timer_thread.start()
+
+        for token in self.provider.generate_stream(system_prompt, user_message, conversation_history):
+            if first_token:
+                stop_timer.set()
+                timer_thread.join()
+                ttft = time.perf_counter() - start
+                # Clear the timer line and print TTFT prefix
+                sys.stdout.write(f"\r[TTFT: {ttft:.2f}s] ")
+                sys.stdout.flush()
+                first_token = False
+            sys.stdout.write(token)
+            sys.stdout.flush()
+            full.append(token)
+
+        if first_token:
+            # No tokens received at all
+            stop_timer.set()
+            timer_thread.join()
+            sys.stdout.write("\r")
+            sys.stdout.flush()
+
+        return "".join(full)
+
+    def get_response(self, player_action: str) -> str:
+        """Get DM response from the LLM (non-streaming fallback)."""
+        return self._get_response_inner(player_action, stream=False)
+
+    def get_response_streamed(self, player_action: str) -> None:
+        """Get DM response, streaming tokens to stdout as they arrive."""
+        self._get_response_inner(player_action, stream=True)
+
+    def _get_response_inner(self, player_action: str, stream: bool = False):
+        """Core response logic. When stream=True, prints directly and returns None."""
+        context = self.build_context(player_action)
+
+        # --- first LLM call ---
+        if stream:
+            response = self._stream_generate(
+                self.get_system_prompt(), context, self.conversation
+            )
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        else:
+            response = self.provider.generate(
+                self.get_system_prompt(), context, self.conversation
+            )
+
+        all_command_results = []
+        max_iterations = 10
+        iteration = 0
+        current_response = response
+        conversation_for_llm = self.conversation + [
+            {"role": "user", "content": context},
+            {"role": "assistant", "content": response}
+        ]
+        narrative_parts = []
+
+        while iteration < max_iterations:
+            iteration += 1
+            narrative, commands = self.parse_commands(current_response)
+
+            if commands:
+                command_results = self.execute_commands(commands)
+                all_command_results.extend(command_results)
+                has_rolls = any(cmd['type'] == 'roll' for cmd in commands)
+
+                if has_rolls:
+                    if narrative.strip():
+                        narrative_parts.append(narrative.strip())
+
+                    roll_results = [r for r, cmd in zip(command_results, commands) if cmd['type'] == 'roll']
+                    results_text = "DICE ROLL RESULTS:\n" + "\n".join(roll_results)
+                    results_text += "\n\nBased on these results, describe what happens next."
+
+                    # Print command results before the follow-up
+                    if stream:
+                        for cr in command_results:
+                            print(cr)
+                        print()
+
+                    # --- follow-up LLM call ---
+                    if stream:
+                        follow_up = self._stream_generate(
+                            self.get_system_prompt(), results_text, conversation_for_llm
+                        )
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                    else:
+                        follow_up = self.provider.generate(
+                            self.get_system_prompt(), results_text, conversation_for_llm
+                        )
+
+                    conversation_for_llm.append({"role": "user", "content": results_text})
+                    conversation_for_llm.append({"role": "assistant", "content": follow_up})
+                    current_response = follow_up
+                else:
+                    if narrative.strip():
+                        narrative_parts.append(narrative.strip())
+                    break
+            else:
+                if narrative.strip():
+                    narrative_parts.append(narrative.strip())
+                break
+
+        final_narrative = "\n\n".join(narrative_parts) if narrative_parts else ""
+        final_narrative = re.sub(r'ROLL:\s*.+?\s+(?:strength|dexterity|constitution|intelligence|wisdom|charisma)\s+DC\s+\d+\s*\|[^\n]*\n?', '', final_narrative, flags=re.IGNORECASE)
+        final_narrative = re.sub(r'DAMAGE:\s*.+?\s+\d+\n?', '', final_narrative)
+        final_narrative = re.sub(r'HEAL:\s*.+?\s+\d+\n?', '', final_narrative)
+        final_narrative = re.sub(r'THINK:\s*[^|]+\|[^\n]*\n?', '', final_narrative)
+
+        self.state.add_to_history(player_action)
+        self.conversation.extend(conversation_for_llm[len(self.conversation):])
+        if len(self.conversation) > 20:
+            self.conversation = self.conversation[-20:]
+
+        if stream:
+            # Non-roll command results that weren't printed during the loop
+            remaining = [cr for cr, cmd in zip(all_command_results, [])][0:0]  # already printed inline
+            return None
+
+        output = []
+        if all_command_results:
+            output.extend(all_command_results)
+            output.append("")
+        output.append(final_narrative)
+        return '\n'.join(output)
+
+    # ------------------------------------------------------------------
+    # Async event generator for web UI
+    # ------------------------------------------------------------------
+
+    async def get_response_events(self, player_action: str):
+        """Async generator that yields structured event dicts for a web UI.
+
+        Events:
+            {"type": "token", "text": str}
+            {"type": "command", "subtype": str, "text": str}
+            {"type": "thought", "character": str, "text": str}
+            {"type": "state", "data": dict}
+            {"type": "done"}
+        """
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        context = self.build_context(player_action)
+        system_prompt = self.get_system_prompt()
+
+        async def _stream_tokens(sys_prompt, user_msg, history):
+            """Run the blocking provider stream in a thread, yield tokens."""
+            q: asyncio.Queue = asyncio.Queue()
+            loop = asyncio.get_event_loop()
+
+            def _produce():
+                for tok in self.provider.generate_stream(sys_prompt, user_msg, history):
+                    loop.call_soon_threadsafe(q.put_nowait, tok)
+                loop.call_soon_threadsafe(q.put_nowait, None)  # sentinel
+
+            loop.run_in_executor(None, _produce)
+
+            full: list[str] = []
+            while True:
+                tok = await q.get()
+                if tok is None:
+                    break
+                full.append(tok)
+                yield tok
+
+        def _clean_narrative(text: str) -> str:
+            """Strip all command lines from narrative text."""
+            cleaned = re.sub(r'ROLL:\s*.+?\s+(?:strength|dexterity|constitution|intelligence|wisdom|charisma)\s+DC\s+\d+\s*\|[^\n]*\n?', '', text, flags=re.IGNORECASE)
+            cleaned = re.sub(r'DAMAGE:\s*.+?\s+\d+\n?', '', cleaned)
+            cleaned = re.sub(r'HEAL:\s*.+?\s+\d+\n?', '', cleaned)
+            cleaned = re.sub(r'NPC:\s*[^|]+\|[^|]+\|[^\n]*\n?', '', cleaned)
+            cleaned = re.sub(r'THINK:\s*[^|]+\|[^\n]*\n?', '', cleaned)
+            return cleaned.strip()
+
+        def _is_player_character(name: str) -> bool:
+            """Check if a character name refers to the player."""
+            char = self.state.get_character(name)
+            return char.is_player if char else False
+
+        # --- First LLM call: stream tokens ---
+        full_tokens: list[str] = []
+        async for token in _stream_tokens(system_prompt, context, self.conversation):
+            full_tokens.append(token)
+            yield {"type": "token", "text": token}
+
+        response = "".join(full_tokens)
+
+        # Replace the streamed DM bubble with cleaned narrative and close it
+        cleaned = _clean_narrative(response)
+        yield {"type": "narrative_replace", "text": cleaned}
+        yield {"type": "narrative_done"}
+
+        # Collect all cleaned narrative parts for the turn log
+        all_cleaned_parts = [cleaned]
+
+        # --- command loop (same logic as _get_response_inner) ---
+        conversation_for_llm = self.conversation + [
+            {"role": "user", "content": context},
+            {"role": "assistant", "content": response},
+        ]
+        max_iterations = 10
+        current_response = response
+
+        for _ in range(max_iterations):
+            narrative, commands = self.parse_commands(current_response)
+            if not commands:
+                break
+
+            command_results = self.execute_commands(commands)
+            has_rolls = any(cmd["type"] == "roll" for cmd in commands)
+
+            # Emit command events
+            for result, cmd in zip(command_results, commands):
+                if cmd["type"] == "thought":
+                    # Only send NPC thoughts to the sidebar, not player thoughts
+                    if not _is_player_character(cmd["character"]):
+                        yield {"type": "thought", "character": cmd["character"], "text": cmd["text"]}
+                else:
+                    yield {"type": "command", "subtype": cmd["type"], "text": result}
+
+            if not has_rolls:
+                break
+
+            # Follow-up LLM call with roll results
+            roll_results = [r for r, c in zip(command_results, commands) if c["type"] == "roll"]
+            results_text = "DICE ROLL RESULTS:\n" + "\n".join(roll_results)
+            results_text += "\n\nBased on these results, describe what happens next."
+
+            full_tokens = []
+            async for token in _stream_tokens(system_prompt, results_text, conversation_for_llm):
+                full_tokens.append(token)
+                yield {"type": "token", "text": token}
+
+            follow_up = "".join(full_tokens)
+
+            # Replace streamed content with cleaned narrative and close it
+            cleaned_follow = _clean_narrative(follow_up)
+            yield {"type": "narrative_replace", "text": cleaned_follow}
+            yield {"type": "narrative_done"}
+            all_cleaned_parts.append(cleaned_follow)
+
+            conversation_for_llm.append({"role": "user", "content": results_text})
+            conversation_for_llm.append({"role": "assistant", "content": follow_up})
+            current_response = follow_up
+
+        # Update state
+        self.state.add_to_history(player_action)
+        self.conversation.extend(conversation_for_llm[len(self.conversation):])
+        if len(self.conversation) > 20:
+            self.conversation = self.conversation[-20:]
+
+        # Record the high-level turn pair
+        user_turn_index = len(self.turns)
+        self.turns.append({"role": "user", "content": player_action})
+        assistant_turn_index = len(self.turns)
+        self.turns.append({"role": "assistant", "content": "\n\n".join(all_cleaned_parts)})
+
+        # Send final game state
+        yield {
+            "type": "state",
+            "data": {
+                "characters": {
+                    name: char.to_dict() for name, char in self.state.characters.items()
+                },
+                "location": self.state.current_location,
+                "in_combat": self.state.in_combat,
+            },
+        }
+        yield {"type": "done", "user_turn": user_turn_index, "assistant_turn": assistant_turn_index}
+
+    def truncate_to_turn(self, turn_index: int):
+        """Truncate turns list to keep entries up to (but not including) turn_index.
+
+        Also rebuilds self.conversation from the remaining turns.
+        """
+        self.turns = self.turns[:turn_index]
+        # Rebuild conversation from turns
+        self.conversation = [
+            {"role": t["role"], "content": t["content"]}
+            for t in self.turns
+        ]
+
+    def edit_turn(self, turn_index: int, new_text: str):
+        """Edit the content of a specific turn entry and truncate everything after.
+
+        Also rebuilds self.conversation.
+        """
+        if 0 <= turn_index < len(self.turns):
+            self.turns[turn_index]["content"] = new_text
+            self.turns = self.turns[:turn_index + 1]
+            self.conversation = [
+                {"role": t["role"], "content": t["content"]}
+                for t in self.turns
+            ]
+    
+    def run(self):
+        """Run interactive game"""
+        print("=" * 60)
+        print("UNIVERSAL AI DUNGEON MASTER")
+        print("=" * 60)
+        print(f"Using: {self.provider.get_name()}")
+        print()
+        
+        # Check for existing save
+        if self.state.load():
+            print("📁 Saved game found!")
+            print()
+            print(self.state.get_summary())
+            print()
+            
+            response = input("Continue this game? (y/n): ").strip().lower()
+            if response == 'y':
+                # Resume game
+                player = next((c for c in self.state.characters.values() if c.is_player), None)
+                if not player:
+                    print("Error: No player character found in save file!")
+                    return
+                
+                print(f"\n{player}\n")
+                print("=" * 60)
+                print("Resuming adventure...")
+                print("Commands: 'quit' to exit, 'state' for game state, 'save' to save")
+                print("=" * 60)
+                print()
+                
+                # Skip to main loop
+                self.game_loop(player)
+                return
+        
+        # New game - create player character
+        print("Create your character:")
+        name = input("Name: ")
+        
+        player = Character(
+            name,
+            stats={'strength': 12, 'dexterity': 14, 'constitution': 13,
+                   'intelligence': 10, 'wisdom': 11, 'charisma': 12},
+            hp=23,
+            max_hp=23,
+            is_player=True,
+            description=input("Brief description: ")
+        )
+        self.state.add_character(player)
+        
+        print(f"\n{player}\n")
+        print("=" * 60)
+        print("The adventure begins...")
+        print("Commands: 'quit' to exit, 'state' for game state, 'save' to save")
+        print("=" * 60)
+        print()
+        
+        # Player sets the opening scene
+        print("--- Set Your Opening Scene ---")
+        print("Describe where your adventure begins. Be as detailed as you like.")
+        print("Examples: 'A dark tavern in the port city of Saltmere...'")
+        print("          'Standing at the gates of an ancient dwarven stronghold...'")
+        print("          'Deep in a misty forest, following an old map...'")
+        print()
+        
+        setting = input("Where does your story begin? ").strip()
+        
+        if setting:
+            location_name = input("\nWhat do you call this place? ").strip() or "Starting Location"
+            
+            # Add player-defined location
+            self.state.add_location(
+                location_name,
+                setting,
+                npcs=[],
+                exits={}
+            )
+            self.state.current_location = location_name
+            
+            print(f"\n--- {location_name} ---")
+            print(setting)
+            print()
+            print("The adventure begins! The DM will respond to your actions from here.")
+            print()
+        else:
+            # Fallback to default if no input
+            self.state.add_location(
+                "Forest Path",
+                "A dirt path winds through dense forest",
+                npcs=[],
+                exits={'north': 'Clearing', 'south': 'Village'}
+            )
+            self.state.current_location = "Forest Path"
+            print("Starting at a forest path...")
+        
+        print("=" * 60)
+        print("Ready to Play!")
+        print("=" * 60)
+        print()
+        
+        # Main loop
+        self.game_loop(player)
+    
+    def game_loop(self, player: Character):
+        """Main game loop"""
+        while True:
+            try:
+                action = input(f"\n{player.name}> ").strip()
+                
+                if not action:
+                    continue
+                    
+                if action.lower() == 'quit':
+                    print("\nSaving game...")
+                    self.state.save()
+                    print("Farewell!")
+                    break
+                
+                if action.lower() == 'save':
+                    self.state.save()
+                    print("Game saved!")
+                    continue
+                    
+                if action.lower() == 'state':
+                    print(self.state.get_summary())
+                    continue
+                    
+                # Get AI response (streamed to stdout)
+                print()
+                self.get_response_streamed(action)
+                
+            except KeyboardInterrupt:
+                print("\n\nSaving game...")
+                self.state.save()
+                print("Farewell!")
+                break
+
+
+def select_provider() -> LLMProvider:
+    """Interactive provider selection"""
+    print("=" * 60)
+    print("SELECT LLM PROVIDER")
+    print("=" * 60)
+    print()
+    
+    # Check what's available
+    available = list_available_providers()
+    
+    if not available:
+        print("No LLM providers are configured!")
+        print()
+        print("Setup instructions:")
+        print("  Claude:    export ANTHROPIC_API_KEY='your-key' && pip install anthropic")
+        print("  OpenAI:    export OPENAI_API_KEY='your-key' && pip install openai")
+        print("  Ollama:    Install from https://ollama.ai and start the server")
+        print("  LM Studio: Install from https://lmstudio.ai and start the server")
+        print()
+        print("Falling back to Mock provider for testing...")
+        return create_provider('mock')
+    
+    print("Available providers:")
+    for i, provider in enumerate(available, 1):
+        print(f"  {i}. {provider.get_name()}")
+    print()
+    
+    while True:
+        try:
+            choice = input(f"Select provider (1-{len(available)}) or 'custom': ").strip()
+            
+            if choice.lower() == 'custom':
+                return custom_provider()
+            
+            idx = int(choice) - 1
+            if 0 <= idx < len(available):
+                return available[idx]
+            else:
+                print(f"Please enter a number between 1 and {len(available)}")
+        except ValueError:
+            print("Invalid input")
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            exit(0)
+
+
+def custom_provider() -> LLMProvider:
+    """Create a custom provider with user-specified parameters"""
+    print("\nCustom provider setup:")
+    print("1. Claude")
+    print("2. OpenAI")
+    print("3. Ollama")
+    print("4. LM Studio")
+    
+    choice = input("Provider type: ").strip()
+    
+    if choice == '1':
+        model = input("Model (default: claude-sonnet-4-20250514): ").strip() or "claude-sonnet-4-20250514"
+        api_key = input("API Key (or press enter to use ANTHROPIC_API_KEY env var): ").strip() or None
+        return create_provider('claude', model=model, api_key=api_key)
+    
+    elif choice == '2':
+        model = input("Model (default: gpt-4): ").strip() or "gpt-4"
+        api_key = input("API Key (or press enter to use OPENAI_API_KEY env var): ").strip() or None
+        return create_provider('openai', model=model, api_key=api_key)
+    
+    elif choice == '3':
+        model = input("Model (default: llama2): ").strip() or "llama2"
+        host = input("Host (default: http://localhost:11434): ").strip() or "http://localhost:11434"
+        return create_provider('ollama', model=model, host=host)
+    
+    elif choice == '4':
+        model = input("Model name (default: local-model): ").strip() or "local-model"
+        host = input("Host (default: http://localhost:1234): ").strip() or "http://localhost:1234"
+        return create_provider('lmstudio', model=model, host=host)
+    
+    else:
+        print("Invalid choice, using mock provider")
+        return create_provider('mock')
+
+
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Universal AI Dungeon Master')
+    parser.add_argument('--provider', '-p', 
+                       choices=['claude', 'openai', 'ollama', 'lmstudio', 'mock'],
+                       help='LLM provider to use')
+    parser.add_argument('--save-file', '-s', default='gamestate.json',
+                       help='Save file to use (default: gamestate.json)')
+    
+    args = parser.parse_args()
+    
+    # Select provider
+    if args.provider:
+        provider = create_provider(args.provider)
+    else:
+        provider = select_provider()
+    
+    # Create DM with specified save file
+    dm = UniversalDM(provider)
+    dm.state.filename = args.save_file
+    dm.run()
+
+
+if __name__ == "__main__":
+    main()

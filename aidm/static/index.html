@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Dungeon Master</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --text: #eee;
+    --muted: #8892a4;
+    --gold: #f0c040;
+    --green: #4ecca3;
+    --red: #e94560;
+    --blue: #5588ff;
+    --thought: #b08cff;
+    --radius: 8px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ---- Header ---- */
+  header {
+    background: var(--surface);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    border-bottom: 1px solid #ffffff10;
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 18px; color: var(--gold); }
+  header .status { font-size: 13px; color: var(--muted); margin-left: auto; }
+  header button {
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid #ffffff15;
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  header button:hover { background: var(--accent); }
+
+  /* ---- Main layout ---- */
+  .layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ---- Chat panel ---- */
+  .chat-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .msg {
+    max-width: 85%;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .msg.player {
+    align-self: flex-end;
+    background: var(--surface2);
+    border: 1px solid var(--blue);
+  }
+  .msg.dm {
+    align-self: flex-start;
+    background: var(--surface);
+    border: 1px solid #ffffff10;
+  }
+  .msg.system {
+    align-self: center;
+    background: transparent;
+    color: var(--muted);
+    font-size: 13px;
+    font-style: italic;
+  }
+  .msg.command {
+    align-self: flex-start;
+    background: #1a2a1a;
+    border: 1px solid var(--green);
+    color: var(--green);
+    font-size: 13px;
+    font-family: 'Consolas', monospace;
+  }
+  .msg .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+    color: var(--muted);
+  }
+
+  /* ---- Input bar ---- */
+  .input-bar {
+    padding: 12px 20px;
+    background: var(--surface);
+    border-top: 1px solid #ffffff10;
+    display: flex;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  .input-bar input {
+    flex: 1;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid #ffffff20;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 15px;
+    outline: none;
+  }
+  .input-bar input:focus { border-color: var(--accent); }
+  .input-bar button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .input-bar button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ---- Characters sidebar ---- */
+  .sidebar {
+    width: 320px;
+    background: var(--surface);
+    border-left: 1px solid #ffffff10;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .sidebar-header {
+    padding: 12px 16px;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--gold);
+    border-bottom: 1px solid #ffffff10;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .characters {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* ---- Character card ---- */
+  .char-card {
+    background: var(--bg);
+    border: 1px solid #ffffff10;
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .char-card-header {
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .char-card-header:hover { background: #ffffff08; }
+  .char-role {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .char-role.pc { background: var(--blue); color: white; }
+  .char-role.npc { background: var(--accent); color: white; }
+  .char-name { font-weight: 600; font-size: 14px; }
+  .char-hp { margin-left: auto; font-size: 13px; font-family: monospace; }
+
+  /* HP bar */
+  .hp-bar-track {
+    height: 4px;
+    background: #ffffff15;
+    margin: 0 12px 8px;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .hp-bar-fill {
+    height: 100%;
+    background: var(--green);
+    transition: width 0.3s;
+  }
+  .hp-bar-fill.low { background: var(--gold); }
+  .hp-bar-fill.critical { background: var(--red); }
+
+  /* Thoughts log */
+  .thoughts-log {
+    max-height: 200px;
+    overflow-y: auto;
+    padding: 0 12px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .thought-entry {
+    font-size: 12px;
+    color: var(--thought);
+    font-style: italic;
+    padding: 4px 8px;
+    background: #b08cff10;
+    border-left: 2px solid var(--thought);
+    border-radius: 0 4px 4px 0;
+    line-height: 1.4;
+  }
+  .thought-entry .turn-num {
+    font-size: 10px;
+    color: var(--muted);
+    font-style: normal;
+  }
+
+  .no-thoughts {
+    font-size: 12px;
+    color: var(--muted);
+    font-style: italic;
+    padding: 4px 12px 10px;
+  }
+
+  /* ---- New game modal ---- */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: #000000aa;
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid #ffffff20;
+    border-radius: 12px;
+    padding: 28px;
+    width: 420px;
+    max-width: 90vw;
+  }
+  .modal h2 { color: var(--gold); margin-bottom: 16px; font-size: 20px; }
+  .modal label { display: block; margin-bottom: 4px; font-size: 13px; color: var(--muted); }
+  .modal input, .modal textarea {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid #ffffff20;
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    margin-bottom: 12px;
+    font-family: inherit;
+  }
+  .modal textarea { resize: vertical; min-height: 60px; }
+  .modal .btn-row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 8px; }
+  .modal button {
+    padding: 8px 18px;
+    border-radius: var(--radius);
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .modal .btn-primary { background: var(--accent); color: white; font-weight: 600; }
+  .modal .btn-secondary { background: var(--surface2); color: var(--text); }
+
+  /* ---- Message actions ---- */
+  .msg-wrapper {
+    display: flex;
+    flex-direction: column;
+    max-width: 85%;
+  }
+  .msg-wrapper.player { align-self: flex-end; }
+  .msg-wrapper.dm { align-self: flex-start; }
+  .msg-wrapper.system { align-self: center; }
+  .msg-wrapper.command { align-self: flex-start; }
+  .msg-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 2px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .msg-wrapper:hover .msg-actions { opacity: 1; }
+  .msg-wrapper.player .msg-actions { justify-content: flex-end; }
+  .msg-actions button {
+    background: transparent;
+    border: 1px solid #ffffff20;
+    color: var(--muted);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .msg-actions button:hover { background: var(--surface2); color: var(--text); }
+
+  /* Edit textarea */
+  .msg-edit-area {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--accent);
+    padding: 8px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 60px;
+    line-height: 1.5;
+  }
+  .msg-edit-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .msg-edit-actions button {
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 4px;
+    border: none;
+    cursor: pointer;
+  }
+  .msg-edit-actions .btn-confirm { background: var(--accent); color: white; }
+  .msg-edit-actions .btn-cancel { background: var(--surface2); color: var(--text); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #ffffff20; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #ffffff40; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚔️ AI Dungeon Master</h1>
+  <button id="btn-new">New Game</button>
+  <button id="btn-load">Load Game</button>
+  <button id="btn-save">Save</button>
+  <span class="status" id="connection-status">Connecting...</span>
+</header>
+
+<div class="layout">
+  <!-- Chat -->
+  <div class="chat-panel">
+    <div class="messages" id="messages"></div>
+    <div class="input-bar">
+      <input type="text" id="player-input" placeholder="What do you do?" autocomplete="off" />
+      <button id="btn-send">Send</button>
+    </div>
+  </div>
+
+  <!-- Characters sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">Characters</div>
+    <div class="characters" id="characters"></div>
+  </div>
+</div>
+
+<!-- New Game modal -->
+<div class="modal-overlay" id="modal-new-game">
+  <div class="modal">
+    <h2>New Adventure</h2>
+    <label for="ng-name">Character Name</label>
+    <input id="ng-name" placeholder="Mitchell" />
+    <label for="ng-desc">Description</label>
+    <input id="ng-desc" placeholder="A wandering bard with a mysterious past" />
+    <label for="ng-loc">Starting Location</label>
+    <input id="ng-loc" placeholder="The Crimson Tavern" />
+    <label for="ng-loc-desc">Location Description</label>
+    <textarea id="ng-loc-desc" placeholder="A dimly lit tavern on the edge of town, filled with hushed conversations and the smell of old ale."></textarea>
+    <div class="btn-row">
+      <button class="btn-secondary" id="ng-cancel">Cancel</button>
+      <button class="btn-primary" id="ng-start">Begin Adventure</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const messagesEl = document.getElementById('messages');
+  const inputEl = document.getElementById('player-input');
+  const btnSend = document.getElementById('btn-send');
+  const statusEl = document.getElementById('connection-status');
+  const charsEl = document.getElementById('characters');
+  const modal = document.getElementById('modal-new-game');
+
+  let ws;
+  let waiting = false;
+  let currentDmBubble = null;  // the msg <div> we append streaming tokens to
+  let currentDmWrapper = null; // the wrapper around the current DM bubble
+  let lastDmBubble = null;     // last finalized DM bubble (for edit tracking)
+  let lastDmWrapper = null;
+  let turn = 0;
+  let gameState = {};
+  let thoughts = {};  // {charName: [{turn, text}]}
+
+  // Message tracking: [{id, role, text, turnIndex, el}]
+  let messageLog = [];
+  let nextMsgId = 0;
+  // Pending player message (not yet confirmed with turn index from backend)
+  let pendingPlayerEntry = null;
+
+  // ---- WebSocket ----
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => {
+      statusEl.textContent = 'Connected';
+      console.log('[WS] Connected');
+    };
+    ws.onerror = (err) => {
+      statusEl.textContent = 'Connection error';
+      console.error('[WS] Error:', err);
+    };
+    ws.onclose = (ev) => {
+      statusEl.textContent = `Disconnected (code ${ev.code}) — reconnecting...`;
+      console.log('[WS] Closed:', ev.code, ev.reason);
+      setTimeout(connect, 2000);
+    };
+    ws.onmessage = (e) => handleEvent(JSON.parse(e.data));
+  }
+  connect();
+
+  // ---- Event handling ----
+  function handleEvent(ev) {
+    switch (ev.type) {
+      case 'token':
+        if (!currentDmBubble) {
+          const { wrapper, msgEl } = addMessageWithActions('', 'dm');
+          currentDmBubble = msgEl;
+          currentDmWrapper = wrapper;
+        }
+        currentDmBubble.textContent += ev.text;
+        scrollDown();
+        break;
+
+      case 'narrative_replace':
+        // Replace the streamed DM bubble with cleaned text
+        if (currentDmBubble) {
+          currentDmBubble.textContent = ev.text;
+          scrollDown();
+        }
+        break;
+
+      case 'narrative_done':
+        // Close the current DM bubble so subsequent tokens create a new one
+        // Keep reference for done handler
+        lastDmBubble = currentDmBubble;
+        lastDmWrapper = currentDmWrapper;
+        currentDmBubble = null;
+        currentDmWrapper = null;
+        break;
+
+      case 'command':
+        addMessage(ev.text, 'command');
+        break;
+
+      case 'thought':
+        addThought(ev.character, ev.text);
+        break;
+
+      case 'state':
+        gameState = ev.data;
+        renderCharacters();
+        break;
+
+      case 'system':
+        addMessage(ev.text, 'system');
+        break;
+
+      case 'error':
+        addMessage('Error: ' + ev.text, 'system');
+        setWaiting(false);
+        break;
+
+      case 'done':
+        // Finalize messages with turn indices from the backend
+        if (pendingPlayerEntry) {
+          pendingPlayerEntry.turnIndex = ev.user_turn;
+          setupPlayerActions(pendingPlayerEntry);
+          pendingPlayerEntry = null;
+        }
+        // Use current bubble if still open, or last finalized one
+        const dmBubble = currentDmBubble || lastDmBubble;
+        const dmWrapper = currentDmWrapper || lastDmWrapper;
+        if (dmBubble) {
+          const entry = {
+            id: nextMsgId++,
+            role: 'dm',
+            text: dmBubble.textContent,
+            turnIndex: ev.assistant_turn,
+            wrapper: dmWrapper,
+            msgEl: dmBubble,
+          };
+          messageLog.push(entry);
+          setupDmActions(entry);
+        }
+        currentDmBubble = null;
+        currentDmWrapper = null;
+        lastDmBubble = null;
+        lastDmWrapper = null;
+        setWaiting(false);
+        break;
+    }
+  }
+
+  // ---- Messages ----
+  function addMessage(text, cls) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + cls;
+    div.textContent = text;
+    messagesEl.appendChild(div);
+    scrollDown();
+    return div;
+  }
+
+  function addMessageWithActions(text, cls) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'msg-wrapper ' + cls;
+
+    const msgEl = document.createElement('div');
+    msgEl.className = 'msg ' + cls;
+    msgEl.textContent = text;
+    wrapper.appendChild(msgEl);
+
+    const actions = document.createElement('div');
+    actions.className = 'msg-actions';
+    wrapper.appendChild(actions);
+
+    messagesEl.appendChild(wrapper);
+    scrollDown();
+    return { wrapper, msgEl, actions };
+  }
+
+  function scrollDown() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // ---- Send action ----
+  function send() {
+    const text = inputEl.value.trim();
+    if (!text || waiting) return;
+    turn++;
+
+    const { wrapper, msgEl, actions } = addMessageWithActions(text, 'player');
+    const entry = {
+      id: nextMsgId++,
+      role: 'player',
+      text,
+      turnIndex: null,  // will be set when 'done' arrives
+      wrapper,
+      msgEl,
+    };
+    messageLog.push(entry);
+    pendingPlayerEntry = entry;
+
+    ws.send(JSON.stringify({ type: 'action', text }));
+    inputEl.value = '';
+    setWaiting(true);
+  }
+
+  // ---- Edit player message → regenerate ----
+  function setupPlayerActions(entry) {
+    const actions = entry.wrapper.querySelector('.msg-actions');
+    const editBtn = document.createElement('button');
+    editBtn.textContent = '✏️ Edit & Regenerate';
+    editBtn.onclick = () => startEditPlayer(entry);
+    actions.appendChild(editBtn);
+  }
+
+  function startEditPlayer(entry) {
+    if (waiting) return;
+    const msgEl = entry.msgEl;
+    const wrapper = entry.wrapper;
+
+    // Replace message content with textarea
+    const textarea = document.createElement('textarea');
+    textarea.className = 'msg-edit-area';
+    textarea.value = entry.text;
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'msg-edit-actions';
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn-confirm';
+    confirmBtn.textContent = 'Send';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-cancel';
+    cancelBtn.textContent = 'Cancel';
+    actionsDiv.appendChild(confirmBtn);
+    actionsDiv.appendChild(cancelBtn);
+
+    msgEl.style.display = 'none';
+    wrapper.querySelector('.msg-actions').style.display = 'none';
+    wrapper.appendChild(textarea);
+    wrapper.appendChild(actionsDiv);
+    textarea.focus();
+
+    cancelBtn.onclick = () => {
+      textarea.remove();
+      actionsDiv.remove();
+      msgEl.style.display = '';
+      wrapper.querySelector('.msg-actions').style.display = '';
+    };
+
+    confirmBtn.onclick = () => {
+      const newText = textarea.value.trim();
+      if (!newText) return;
+
+      textarea.remove();
+      actionsDiv.remove();
+      msgEl.style.display = '';
+      wrapper.querySelector('.msg-actions').style.display = '';
+
+      // Update the entry
+      entry.text = newText;
+      msgEl.textContent = newText;
+
+      // Remove all messages after this one from the DOM and log
+      truncateAfter(entry.id);
+
+      // Send edit request
+      turn++;
+      ws.send(JSON.stringify({
+        type: 'edit_action',
+        turn_index: entry.turnIndex,
+        text: newText,
+      }));
+      pendingPlayerEntry = entry;
+      setWaiting(true);
+    };
+  }
+
+  // ---- Edit DM response → truncate ----
+  function setupDmActions(entry) {
+    const actions = entry.wrapper.querySelector('.msg-actions');
+    const editBtn = document.createElement('button');
+    editBtn.textContent = '✏️ Edit & Truncate';
+    editBtn.onclick = () => startEditDm(entry);
+    actions.appendChild(editBtn);
+  }
+
+  function startEditDm(entry) {
+    if (waiting) return;
+    const msgEl = entry.msgEl;
+    const wrapper = entry.wrapper;
+
+    const textarea = document.createElement('textarea');
+    textarea.className = 'msg-edit-area';
+    textarea.value = entry.text;
+    textarea.style.minHeight = '100px';
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'msg-edit-actions';
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn-confirm';
+    confirmBtn.textContent = 'Save & Truncate';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-cancel';
+    cancelBtn.textContent = 'Cancel';
+    actionsDiv.appendChild(confirmBtn);
+    actionsDiv.appendChild(cancelBtn);
+
+    msgEl.style.display = 'none';
+    wrapper.querySelector('.msg-actions').style.display = 'none';
+    wrapper.appendChild(textarea);
+    wrapper.appendChild(actionsDiv);
+    textarea.focus();
+
+    cancelBtn.onclick = () => {
+      textarea.remove();
+      actionsDiv.remove();
+      msgEl.style.display = '';
+      wrapper.querySelector('.msg-actions').style.display = '';
+    };
+
+    confirmBtn.onclick = () => {
+      const newText = textarea.value.trim();
+      if (!newText) return;
+
+      textarea.remove();
+      actionsDiv.remove();
+      msgEl.style.display = '';
+      wrapper.querySelector('.msg-actions').style.display = '';
+
+      // Update the entry
+      entry.text = newText;
+      msgEl.textContent = newText;
+
+      // Remove all messages after this one
+      truncateAfter(entry.id);
+
+      // Send edit request
+      ws.send(JSON.stringify({
+        type: 'edit_response',
+        turn_index: entry.turnIndex,
+        text: newText,
+      }));
+    };
+  }
+
+  // ---- Truncate messages after a given ID ----
+  function truncateAfter(msgId) {
+    const idx = messageLog.findIndex(m => m.id === msgId);
+    if (idx < 0) return;
+    // Remove all messages after this one from the DOM
+    const toRemove = messageLog.splice(idx + 1);
+    for (const m of toRemove) {
+      if (m.wrapper && m.wrapper.parentNode) {
+        m.wrapper.remove();
+      }
+    }
+    // Also remove any non-tracked messages (commands, system) that appear after the kept message
+    const lastKept = messageLog.length > 0 ? messageLog[messageLog.length - 1].wrapper : null;
+    if (lastKept) {
+      while (lastKept.nextSibling) {
+        lastKept.nextSibling.remove();
+      }
+    }
+  }
+
+  function setWaiting(v) {
+    waiting = v;
+    btnSend.disabled = v;
+    inputEl.disabled = v;
+    if (!v) inputEl.focus();
+  }
+
+  btnSend.addEventListener('click', send);
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') send();
+  });
+
+  // ---- Characters ----
+  function renderCharacters() {
+    const chars = gameState.characters || {};
+    charsEl.innerHTML = '';
+    for (const [name, c] of Object.entries(chars)) {
+      const card = document.createElement('div');
+      card.className = 'char-card';
+      card.dataset.name = name;
+
+      const hpPct = c.max_hp ? Math.round((c.hp / c.max_hp) * 100) : 100;
+      const hpClass = hpPct <= 25 ? 'critical' : hpPct <= 50 ? 'low' : '';
+      const role = c.is_player ? 'pc' : 'npc';
+
+      card.innerHTML = `
+        <div class="char-card-header">
+          <span class="char-role ${role}">${role}</span>
+          <span class="char-name">${esc(name)}</span>
+          <span class="char-hp">${c.hp}/${c.max_hp}</span>
+        </div>
+        <div class="hp-bar-track"><div class="hp-bar-fill ${hpClass}" style="width:${hpPct}%"></div></div>
+        <div class="thoughts-log" id="thoughts-${CSS.escape(name)}"></div>
+      `;
+      charsEl.appendChild(card);
+
+      // Render existing thoughts (only NPC thoughts are stored)
+      const logEl = card.querySelector('.thoughts-log');
+      const charThoughts = thoughts[name] || [];
+      if (charThoughts.length === 0 && !c.is_player) {
+        logEl.innerHTML = '<div class="no-thoughts">No thoughts yet...</div>';
+      } else if (charThoughts.length > 0) {
+        for (const t of charThoughts) {
+          appendThoughtEl(logEl, t);
+        }
+      }
+    }
+  }
+
+  function addThought(character, text) {
+    if (!thoughts[character]) thoughts[character] = [];
+    const entry = { turn, text };
+    thoughts[character].push(entry);
+
+    const logEl = document.getElementById('thoughts-' + CSS.escape(character));
+    if (logEl) {
+      const placeholder = logEl.querySelector('.no-thoughts');
+      if (placeholder) placeholder.remove();
+      appendThoughtEl(logEl, entry);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  }
+
+  function appendThoughtEl(container, t) {
+    const div = document.createElement('div');
+    div.className = 'thought-entry';
+    div.innerHTML = `<span class="turn-num">turn ${t.turn}</span> ${esc(t.text)}`;
+    container.appendChild(div);
+  }
+
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  // ---- Header buttons ----
+  document.getElementById('btn-new').addEventListener('click', () => modal.classList.add('open'));
+  document.getElementById('ng-cancel').addEventListener('click', () => modal.classList.remove('open'));
+  document.getElementById('ng-start').addEventListener('click', () => {
+    const name = document.getElementById('ng-name').value.trim() || 'Hero';
+    const desc = document.getElementById('ng-desc').value.trim();
+    const loc = document.getElementById('ng-loc').value.trim() || 'Unknown Lands';
+    const locDesc = document.getElementById('ng-loc-desc').value.trim() || 'A mysterious place.';
+    ws.send(JSON.stringify({
+      type: 'new_game', name, description: desc,
+      location: loc, location_description: locDesc
+    }));
+    thoughts = {};
+    turn = 0;
+    messageLog = [];
+    nextMsgId = 0;
+    pendingPlayerEntry = null;
+    messagesEl.innerHTML = '';
+    modal.classList.remove('open');
+  });
+
+  document.getElementById('btn-load').addEventListener('click', () => {
+    ws.send(JSON.stringify({ type: 'load_game' }));
+  });
+
+  document.getElementById('btn-save').addEventListener('click', () => {
+    ws.send(JSON.stringify({ type: 'save' }));
+  });
+})();
+</script>
+</body>
+</html>

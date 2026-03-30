@@ -1,0 +1,23 @@
+# AI Dungeon Master - Python Dependencies
+
+# Core dependencies
+anthropic>=0.40.0
+openai>=1.0.0
+requests>=2.31.0
+
+# Web UI
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+websockets>=11.0
+
+# Local GGUF model inference
+llama-cpp-python>=0.3.0
+
+# Model downloading (huggingface-cli)
+huggingface-hub>=0.20.0
+hf_transfer
+
+# Optional development dependencies
+# pytest>=7.0.0
+# black>=23.0.0
+# flake8>=6.0.0
