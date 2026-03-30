@@ -19,9 +19,11 @@ def load_config(config_file: str = 'config.ini') -> Optional[configparser.Config
     return None
 
 
-def create_provider_from_config(config: configparser.ConfigParser, provider_name: str) -> LLMProvider:
+def create_provider_from_config(config: Optional[configparser.ConfigParser], provider_name: str) -> LLMProvider:
     """Create a provider based on config file settings"""
-    
+    if config is None:
+        return create_provider('mock')
+
     if provider_name == 'claude':
         return create_provider(
             'claude',

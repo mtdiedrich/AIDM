@@ -22,19 +22,18 @@ AIDM/
 │   ├── dice.py            # Dice rolling engine
 │   ├── gamestate.py       # Character and world state
 │   ├── llm_providers.py   # LLM provider abstraction
-│   └── config.py          # Configuration management
-├── examples/              # Example implementations
-│   ├── ai_dm.py          # Basic framework example
-│   └── ai_integration.py  # Integration examples
+│   ├── config.py          # Configuration management
+│   ├── setup.py           # Ollama setup helpers
+│   └── web.py             # FastAPI web UI backend
 ├── docs/                  # Documentation
 │   └── SAVE_LOAD_GUIDE.md
-├── run.py                 # Main entry point (recommended)
-├── quick_start.py         # Fast startup script
-├── universal_dm_config.py # Config-based startup
-├── config.ini.example     # Configuration template
+├── tests/                 # Unit tests
+├── run.py                 # CLI entry point
+├── run_web.py             # Web UI entry point
+├── config.ini             # Runtime configuration
 ├── requirements.txt       # Python dependencies
-├── pyproject.toml        # Project metadata
-└── README.md             # This file
+├── pyproject.toml         # Project metadata
+└── README.md              # This file
 ```
 
 ## Quick Start
@@ -58,36 +57,20 @@ cp config.ini.example config.ini
 
 ### 3. Run the Game
 
-**Fastest method (uses config.ini):**
+**CLI mode (uses config.ini):**
 ```bash
 python run.py
 ```
 
-**Alternative methods:**
+**With Ollama auto-setup:**
 ```bash
-# Quick start with config
-python quick_start.py
-
-# With command line options
-python universal_dm_config.py --provider claude
-
-# Interactive provider selection
-python universal_dm_config.py --interactive  
-python universal_dm_config.py --provider openai
-
-# Use local Ollama
-python universal_dm_config.py --provider ollama
-
-# Test without AI
-python universal_dm_config.py --provider mock
+python run.py --setup
+python run.py --setup -m qwen3.5:9b-q8_0   # Specify model
 ```
 
-### Method 3: Config File
-
+**Web UI mode:**
 ```bash
-cp config.ini.example config.ini
-# Edit config.ini with your settings
-python universal_dm_config.py
+python run_web.py
 ```
 
 ### Provider Setup
@@ -98,16 +81,6 @@ See `PROVIDERS.md` for detailed setup instructions for each provider:
 - **Ollama** - Free local models, no API key
 - **LM Studio** - Free local models with GUI
 - **Mock** - No AI, for testing mechanics
-
-### Basic Framework (No AI)
-
-Test the framework without AI integration:
-
-```bash
-python ai_dm.py
-```
-
-This gives you character creation, dice rolling, and state management with placeholder AI responses.
 
 ### Commands
 
@@ -126,8 +99,8 @@ In-game commands:
 The system uses a provider abstraction that allows any LLM to act as DM:
 
 ```python
-from llm_providers import create_provider
-from universal_dm import UniversalDM
+from aidm.llm_providers import create_provider
+from aidm.dm import UniversalDM
 
 # Use any provider
 provider = create_provider('claude')  # or 'openai', 'ollama', etc.
@@ -192,7 +165,7 @@ The `AIDungeonMaster` class:
 Want to integrate a different LLM? Just implement the `LLMProvider` interface:
 
 ```python
-from llm_providers import LLMProvider
+from aidm.llm_providers import LLMProvider
 
 class MyCustomProvider(LLMProvider):
     def __init__(self, api_key: str):
@@ -212,13 +185,13 @@ class MyCustomProvider(LLMProvider):
         return "My Custom LLM"
 
 # Use it
-from universal_dm import UniversalDM
+from aidm.dm import UniversalDM
 provider = MyCustomProvider(api_key="...")
 dm = UniversalDM(provider)
 dm.run()
 ```
 
-Then add it to `create_provider()` in `llm_providers.py` for easy access.
+Then add it to `create_provider()` in `aidm/llm_providers.py` for easy access.
 
 ## Customization
 

@@ -32,7 +32,7 @@ def main():
     if args.setup:
         from aidm.setup import run_setup, DEFAULT_MODEL
         model = args.model or DEFAULT_MODEL
-        success = run_setup(model=model, launch=False)
+        success = run_setup(model=model)
         if not success:
             sys.exit(1)
         print()  # blank line before game starts

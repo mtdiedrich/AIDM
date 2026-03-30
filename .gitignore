@@ -26,9 +26,7 @@ models/
 build_log*.txt
 
 # Scratch / debug scripts
-_gpu_check.py
-_test_stream.py
-_test_ws.py
+_*.py
 
 # OS
 .DS_Store
