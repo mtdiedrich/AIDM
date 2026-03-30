@@ -2,7 +2,7 @@
 Automated setup for running AIDM with a local Ollama model.
 
 Handles: checking Ollama availability, pulling a model, updating config.ini,
-and optionally launching the game.
+and optionally updating config.ini.
 """
 
 import configparser
@@ -14,8 +14,6 @@ import time
 from typing import Optional
 
 import requests
-
-
 import shutil
 
 
@@ -223,7 +221,6 @@ def run_setup(
     model: str = DEFAULT_MODEL,
     host: str = DEFAULT_HOST,
     config_path: str = DEFAULT_CONFIG,
-    launch: bool = False,
 ) -> bool:
     """Full setup flow: check Ollama → start server → pull model → update config."""
     print("=== AIDM Ollama Setup ===\n")
@@ -273,11 +270,6 @@ def run_setup(
     print(f"  Provider : ollama")
     print(f"  Model    : {model}")
     print(f"  Host     : {host}\n")
-
-    if launch:
-        print("Launching game...\n")
-        from run import main as launch_game
-        launch_game()
 
     return True
 
@@ -391,7 +383,6 @@ def run_setup_llamacpp(
     n_ctx: int = 4096,
     n_gpu_layers: int = -1,
     config_path: str = DEFAULT_CONFIG,
-    launch: bool = False,
 ) -> bool:
     """Full setup flow: install deps → download GGUF via HF → update config."""
     print("=== AIDM llama-cpp Setup ===\n")
@@ -441,11 +432,6 @@ def run_setup_llamacpp(
     print(f"  Context    : {n_ctx}")
     print(f"  GPU layers : {n_gpu_layers} (all)\n")
 
-    if launch:
-        print("Launching game...\n")
-        from run import main as launch_game
-        launch_game()
-
     return True
 
 
@@ -464,7 +450,6 @@ def main():
     )
     ol.add_argument("--host", default=DEFAULT_HOST, help=f"Ollama server URL (default: {DEFAULT_HOST})")
     ol.add_argument("--config", "-c", default=DEFAULT_CONFIG, help="Config file path")
-    ol.add_argument("--launch", "-l", action="store_true", help="Launch the game after setup")
 
     # --- llamacpp sub-command (new default) ---
     lc = sub.add_parser("llamacpp", help="Set up with llama-cpp-python + HuggingFace download")
@@ -474,21 +459,20 @@ def main():
     lc.add_argument("--n-ctx", type=int, default=4096, help="Context window size")
     lc.add_argument("--n-gpu-layers", type=int, default=-1, help="GPU layers (-1 = all)")
     lc.add_argument("--config", "-c", default=DEFAULT_CONFIG, help="Config file path")
-    lc.add_argument("--launch", "-l", action="store_true", help="Launch the game after setup")
 
     args = parser.parse_args()
 
     if args.backend == "ollama":
         success = run_setup(
             model=args.model, host=args.host,
-            config_path=args.config, launch=args.launch,
+            config_path=args.config,
         )
     elif args.backend == "llamacpp":
         success = run_setup_llamacpp(
             repo=args.repo, filename=args.filename,
             local_dir=args.models_dir, n_ctx=args.n_ctx,
             n_gpu_layers=args.n_gpu_layers,
-            config_path=args.config, launch=args.launch,
+            config_path=args.config,
         )
     else:
         # Default to llamacpp if no sub-command given

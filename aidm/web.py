@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import load_config, create_provider_from_config, get_default_provider
 from .dm import UniversalDM
-from .gamestate import Character
+from .gamestate import Character, GameState
 
 log = logging.getLogger("aidm.web")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
@@ -102,7 +102,7 @@ async def websocket_endpoint(ws: WebSocket):
                 name = msg.get("name", "Hero")
                 desc = msg.get("description", "")
                 # Reset DM state
-                game.state = __import__("aidm.gamestate", fromlist=["GameState"]).GameState()
+                game.state = GameState()
                 game.conversation = []
                 game.turns = []
                 player = Character(
