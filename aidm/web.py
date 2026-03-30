@@ -14,7 +14,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import load_config, create_provider_from_config, get_default_provider
+from .config import load_config, get_ollama_settings
 from .dm import UniversalDM
 from .gamestate import Character, GameState
 
@@ -47,12 +47,12 @@ def _validate_ws_field(value, max_len: int, default: str = "") -> str:
 def _create_dm() -> UniversalDM:
     """Create a DM instance from config.ini."""
     config = load_config()
-    provider_name = get_default_provider(config)
-    log.info("Creating DM with provider: %s", provider_name)
+    settings = get_ollama_settings(config)
+    log.info("Creating DM: %s @ %s", settings["model"], settings["host"])
     t0 = time.time()
-    provider = create_provider_from_config(config, provider_name) if config else create_provider_from_config(None, "mock")
-    log.info("Provider created in %.1fs: %s", time.time() - t0, provider.get_name())
-    return UniversalDM(provider)
+    dm = UniversalDM(**settings)
+    log.info("DM created in %.1fs: %s", time.time() - t0, dm.get_display_name())
+    return dm
 
 
 # DM instance — created lazily on first request so the server starts immediately

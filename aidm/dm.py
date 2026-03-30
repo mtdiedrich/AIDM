@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 """
-Universal AI Dungeon Master
-Works with Claude, OpenAI, Ollama, LM Studio, or any provider
+AI Dungeon Master — runs locally via Ollama.
 """
 
+import json
 import re
-from typing import List, Dict, Tuple
+import urllib.request
+import urllib.error
+from typing import Generator, List, Dict, Tuple
 from .dice import DiceRoller
 from .gamestate import GameState, Character
-from .llm_providers import LLMProvider
 
 
 class UniversalDM:
-    """Dungeon Master that works with any LLM provider"""
-    
-    def __init__(self, provider: LLMProvider):
-        self.provider = provider
+    """Dungeon Master powered by a local Ollama instance."""
+
+    def __init__(self, host: str = "http://localhost:11434",
+                 model: str = "qwen3.5:9b-q8_0", max_tokens: int = 1000):
+        self.host = host.rstrip("/")
+        self.model = model
+        self.max_tokens = max_tokens
         self.state = GameState()
         self.dice = DiceRoller()
         self.conversation = []
@@ -23,6 +27,55 @@ class UniversalDM:
         # Maps 1:1 with visible UI messages (player action, DM response).
         # Internal follow-up calls (dice roll results) are NOT separate turns.
         self.turns: List[Dict] = []
+
+    # ------------------------------------------------------------------
+    # Ollama HTTP helpers
+    # ------------------------------------------------------------------
+
+    def _ollama_post(self, body: dict):
+        """POST JSON to /api/chat and return the HTTPResponse."""
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(
+            f"{self.host}/api/chat",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        return urllib.request.urlopen(req)
+
+    def generate_stream(self, system_prompt: str, user_message: str,
+                        conversation_history: list | None = None) -> Generator[str, None, None]:
+        """Stream tokens from Ollama's /api/chat endpoint."""
+        messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        if conversation_history:
+            messages.extend(conversation_history)
+        messages.append({"role": "user", "content": user_message})
+
+        body = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "options": {"num_predict": self.max_tokens},
+        }
+        try:
+            resp = self._ollama_post(body)
+            for line in resp:
+                if not line.strip():
+                    continue
+                chunk = json.loads(line)
+                token = chunk.get("message", {}).get("content", "")
+                if token:
+                    yield token
+                if chunk.get("done"):
+                    break
+            resp.close()
+        except urllib.error.URLError as e:
+            yield f"[Ollama not reachable at {self.host} — is it running?] ({e.reason})"
+        except Exception as e:
+            yield f"[Error calling Ollama: {e}]"
+
+    def get_display_name(self) -> str:
+        return f"Ollama ({self.model})"
         
     def get_system_prompt(self) -> str:
         """System prompt that teaches any LLM to be a DM"""
@@ -247,7 +300,7 @@ Keep responses under 200 words. Be descriptive but concise."""
             loop = asyncio.get_event_loop()
 
             def _produce():
-                for tok in self.provider.generate_stream(sys_prompt, user_msg, history):
+                for tok in self.generate_stream(sys_prompt, user_msg, history):
                     loop.call_soon_threadsafe(q.put_nowait, tok)
                 loop.call_soon_threadsafe(q.put_nowait, None)  # sentinel
 

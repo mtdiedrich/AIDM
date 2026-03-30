@@ -1,11 +1,10 @@
 """Tests for THINK command parsing in the DM."""
 
 from aidm.dm import UniversalDM
-from aidm.llm_providers import MockProvider
 
 
 def _make_dm():
-    return UniversalDM(MockProvider())
+    return UniversalDM()
 
 
 class TestThinkParsing:

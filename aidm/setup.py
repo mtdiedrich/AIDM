@@ -201,8 +201,6 @@ def update_config(
     if os.path.exists(config_path):
         cfg.read(config_path)
 
-    cfg["DEFAULT"]["default_provider"] = "ollama"
-
     if "ollama" not in cfg:
         cfg["ollama"] = {}
     cfg["ollama"]["host"] = host

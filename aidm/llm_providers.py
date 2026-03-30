@@ -1,21 +1,24 @@
 """
-LLM Provider abstraction layer
-Allows switching between Claude, OpenAI, local models (via Ollama/LM Studio), etc.
+LLM Provider abstraction layer — Ollama-only (via native HTTP API).
+
+No external SDK required; uses urllib from the standard library.
 """
 
 from abc import ABC, abstractmethod
 from typing import Generator, List, Dict, Optional
-import os
+import json
+import urllib.request
+import urllib.error
 
 
 class LLMProvider(ABC):
     """Abstract base class for LLM providers"""
-    
+
     @abstractmethod
-    def generate(self, system_prompt: str, user_message: str, 
+    def generate(self, system_prompt: str, user_message: str,
                  conversation_history: Optional[List[Dict]] = None) -> str:
         pass
-    
+
     def generate_stream(self, system_prompt: str, user_message: str,
                          conversation_history: Optional[List[Dict]] = None) -> Generator[str, None, None]:
         """Yield response tokens as they are generated. Default: yield full response at once."""
@@ -24,162 +27,105 @@ class LLMProvider(ABC):
     @abstractmethod
     def is_available(self) -> bool:
         pass
-    
+
     @abstractmethod
     def get_name(self) -> str:
         pass
 
 
-class ClaudeProvider(LLMProvider):
-    """Anthropic Claude API provider"""
-    
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-20250514",
-                 max_tokens: int = 1000):
-        self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
-        self.model = model
-        self.max_tokens = max_tokens
-        self.client = None
-        self._client_initialized = False
-        
-    def _ensure_client(self):
-        if not self._client_initialized:
-            self._client_initialized = True
-            if self.api_key:
-                try:
-                    import anthropic
-                    self.client = anthropic.Anthropic(api_key=self.api_key)
-                except ImportError:
-                    print("Warning: anthropic package not installed. Run: pip install anthropic")
-                except Exception as e:
-                    print(f"Warning: Could not initialize Anthropic client: {e}")
-    
-    def generate(self, system_prompt: str, user_message: str, 
-                 conversation_history: Optional[List[Dict]] = None) -> str:
-        self._ensure_client()
-        if not self.client:
-            return "[Claude API not available - check API key and anthropic package]"
-        
-        try:
-            messages = []
-            if conversation_history:
-                messages.extend(conversation_history)
-            messages.append({"role": "user", "content": user_message})
-            
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                system=system_prompt,
-                messages=messages
-            )
-            
-            return response.content[0].text
-            
-        except Exception as e:
-            return f"Error calling Claude API: {e}"
-    
-    def is_available(self) -> bool:
-        return self.client is not None
-    
-    def get_name(self) -> str:
-        return f"Claude ({self.model})"
+class OllamaProvider(LLMProvider):
+    """Ollama provider using the native /api/chat HTTP endpoint.
 
-
-class OpenAIProvider(LLMProvider):
-    """OpenAI-compatible API provider.
-
-    Works with OpenAI, Ollama (base_url=http://localhost:11434/v1),
-    LM Studio (base_url=http://localhost:1234/v1), and any other
-    OpenAI-compatible server.
+    Talks directly to the Ollama server — no openai or other SDK needed.
     """
-    
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4",
-                 base_url: Optional[str] = None, max_tokens: int = 1000):
+
+    def __init__(self, host: str = "http://localhost:11434",
+                 model: str = "qwen3.5:9b-q8_0", max_tokens: int = 1000):
+        self.host = host.rstrip("/")
         self.model = model
-        self.base_url = base_url
         self.max_tokens = max_tokens
-        # When pointing at a local server, no real key is needed
-        self.api_key = api_key or os.environ.get('OPENAI_API_KEY') or ("not-needed" if base_url else None)
-        self.client = None
-        self._client_initialized = False
-        
-    def _ensure_client(self):
-        if not self._client_initialized:
-            self._client_initialized = True
-            if self.api_key:
-                try:
-                    import openai
-                    kwargs: dict = {"api_key": self.api_key}
-                    if self.base_url:
-                        kwargs["base_url"] = self.base_url
-                    self.client = openai.OpenAI(**kwargs)
-                except ImportError:
-                    print("Warning: openai package not installed. Run: pip install openai")
-                except Exception as e:
-                    print(f"Warning: Could not initialize OpenAI client: {e}")
-    
-    def generate(self, system_prompt: str, user_message: str, 
+
+    # -- internal helpers ---------------------------------------------------
+
+    def _build_messages(self, system_prompt: str, user_message: str,
+                        conversation_history: Optional[List[Dict]] = None) -> List[Dict]:
+        messages: List[Dict] = [{"role": "system", "content": system_prompt}]
+        if conversation_history:
+            messages.extend(conversation_history)
+        messages.append({"role": "user", "content": user_message})
+        return messages
+
+    def _post(self, path: str, body: dict, *, stream: bool = False):
+        """Low-level POST to Ollama, returns the http.client.HTTPResponse."""
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(
+            f"{self.host}{path}",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        return urllib.request.urlopen(req)
+
+    # -- LLMProvider interface ----------------------------------------------
+
+    def generate(self, system_prompt: str, user_message: str,
                  conversation_history: Optional[List[Dict]] = None) -> str:
-        self._ensure_client()
-        if not self.client:
-            return "[OpenAI API not available - check API key and openai package]"
-        
+        body = {
+            "model": self.model,
+            "messages": self._build_messages(system_prompt, user_message, conversation_history),
+            "stream": False,
+            "options": {"num_predict": self.max_tokens},
+        }
         try:
-            messages = [{"role": "system", "content": system_prompt}]
-            if conversation_history:
-                messages.extend(conversation_history)
-            messages.append({"role": "user", "content": user_message})
-            
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=self.max_tokens
-            )
-            
-            return response.choices[0].message.content
-            
+            with self._post("/api/chat", body) as resp:
+                result = json.loads(resp.read())
+                return result["message"]["content"]
+        except urllib.error.URLError as e:
+            return f"[Ollama not reachable at {self.host} — is it running?] ({e.reason})"
         except Exception as e:
-            return f"Error calling OpenAI API: {e}"
+            return f"[Error calling Ollama: {e}]"
 
     def generate_stream(self, system_prompt: str, user_message: str,
                          conversation_history: Optional[List[Dict]] = None) -> Generator[str, None, None]:
-        self._ensure_client()
-        if not self.client:
-            yield "[OpenAI API not available - check API key and openai package]"
-            return
-
+        body = {
+            "model": self.model,
+            "messages": self._build_messages(system_prompt, user_message, conversation_history),
+            "stream": True,
+            "options": {"num_predict": self.max_tokens},
+        }
         try:
-            messages = [{"role": "system", "content": system_prompt}]
-            if conversation_history:
-                messages.extend(conversation_history)
-            messages.append({"role": "user", "content": user_message})
-
-            stream = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=self.max_tokens,
-                stream=True,
-            )
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content if chunk.choices[0].delta else None
-                if delta:
-                    yield delta
-
+            resp = self._post("/api/chat", body, stream=True)
+            for line in resp:
+                if not line.strip():
+                    continue
+                chunk = json.loads(line)
+                token = chunk.get("message", {}).get("content", "")
+                if token:
+                    yield token
+                if chunk.get("done"):
+                    break
+            resp.close()
+        except urllib.error.URLError as e:
+            yield f"[Ollama not reachable at {self.host} — is it running?] ({e.reason})"
         except Exception as e:
-            yield f"Error calling OpenAI API: {e}"
+            yield f"[Error calling Ollama: {e}]"
 
     def is_available(self) -> bool:
-        return self.client is not None
-    
+        try:
+            req = urllib.request.Request(f"{self.host}/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
     def get_name(self) -> str:
-        if self.base_url:
-            return f"OpenAI-compat ({self.model} @ {self.base_url})"
-        return f"OpenAI ({self.model})"
+        return f"Ollama ({self.model} @ {self.host})"
 
 
 class MockProvider(LLMProvider):
     """Mock provider for testing without an actual LLM"""
-    
-    def generate(self, system_prompt: str, user_message: str, 
+
+    def generate(self, system_prompt: str, user_message: str,
                  conversation_history: Optional[List[Dict]] = None) -> str:
         return f"""[Mock DM Response]
 
@@ -195,10 +141,10 @@ Or create an NPC:
 NPC: Guard | A stern-looking guard | Protect the gate
 
 Configure a real LLM provider to get actual responses."""
-    
+
     def is_available(self) -> bool:
         return True
-    
+
     def get_name(self) -> str:
         return "Mock Provider (Testing)"
 
@@ -209,17 +155,16 @@ def create_provider(provider_type: str, **kwargs) -> LLMProvider:
     Factory function to create LLM providers.
 
     Args:
-        provider_type: 'claude', 'openai', or 'mock'
+        provider_type: 'ollama' or 'mock'
         **kwargs: Provider-specific arguments
     """
     providers = {
-        'claude': ClaudeProvider,
-        'openai': OpenAIProvider,
-        'mock': MockProvider
+        'ollama': OllamaProvider,
+        'mock': MockProvider,
     }
-    
+
     provider_class = providers.get(provider_type.lower())
     if not provider_class:
         raise ValueError(f"Unknown provider: {provider_type}. Choose from: {list(providers.keys())}")
-    
+
     return provider_class(**kwargs)
