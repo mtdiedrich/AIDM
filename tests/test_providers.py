@@ -1,109 +1,61 @@
-"""Tests for provider consolidation and config mapping."""
+"""Tests for DM construction and config helpers."""
 
-from unittest.mock import patch, MagicMock
 import configparser
-import pytest
 
-from aidm.llm_providers import OpenAIProvider, create_provider
-from aidm.config import create_provider_from_config
-
-
-class TestOpenAIProviderBaseUrl:
-    """OpenAIProvider should accept a base_url for local servers."""
-
-    def test_base_url_stored(self):
-        p = OpenAIProvider(api_key="test-key", model="gpt-4", base_url="http://localhost:11434/v1")
-        assert p.base_url == "http://localhost:11434/v1"
-
-    def test_base_url_default_is_none(self):
-        p = OpenAIProvider(api_key="test-key")
-        assert p.base_url is None
-
-    @patch.dict("sys.modules", {"openai": MagicMock()})
-    def test_base_url_passed_to_client(self):
-        import sys
-        mock_openai = sys.modules["openai"]
-        mock_openai.OpenAI = MagicMock()
-        p = OpenAIProvider(api_key="k", base_url="http://localhost:1234/v1")
-        p._client_initialized = False  # reset since module was just injected
-        p._ensure_client()
-        mock_openai.OpenAI.assert_called_once_with(api_key="k", base_url="http://localhost:1234/v1")
-
-    @patch.dict("sys.modules", {"openai": MagicMock()})
-    def test_dummy_key_when_base_url_set_no_key(self):
-        """When base_url is set but no api_key, use a dummy key so the client still initialises."""
-        import sys
-        mock_openai = sys.modules["openai"]
-        mock_openai.OpenAI = MagicMock()
-        p = OpenAIProvider(base_url="http://localhost:11434/v1")
-        p._client_initialized = False
-        p._ensure_client()
-        assert p.client is not None
-        call_kwargs = mock_openai.OpenAI.call_args[1]
-        assert call_kwargs["api_key"] is not None  # should be a dummy value
+from aidm.dm import UniversalDM
+from aidm.config import get_ollama_settings
 
 
-class TestMaxTokens:
-    """max_tokens should be configurable on providers."""
+class TestDMInit:
+    """UniversalDM should store host, model, max_tokens."""
 
-    def test_openai_default_max_tokens(self):
-        p = OpenAIProvider(api_key="k")
-        assert p.max_tokens == 1000
+    def test_defaults(self):
+        dm = UniversalDM()
+        assert dm.host == "http://localhost:11434"
+        assert dm.model == "qwen3.5:9b-q8_0"
+        assert dm.max_tokens == 1000
 
-    def test_openai_custom_max_tokens(self):
-        p = OpenAIProvider(api_key="k", max_tokens=2000)
-        assert p.max_tokens == 2000
+    def test_custom_values(self):
+        dm = UniversalDM(host="http://myhost:9999", model="llama3", max_tokens=2048)
+        assert dm.host == "http://myhost:9999"
+        assert dm.model == "llama3"
+        assert dm.max_tokens == 2048
+
+    def test_trailing_slash_stripped(self):
+        dm = UniversalDM(host="http://localhost:11434/")
+        assert dm.host == "http://localhost:11434"
+
+    def test_display_name(self):
+        dm = UniversalDM(model="qwen3.5:9b-q8_0")
+        assert "Ollama" in dm.get_display_name()
+        assert "qwen3.5:9b-q8_0" in dm.get_display_name()
 
 
-class TestConfigMapsOllamaToOpenAI:
-    """config.py should map the 'ollama' provider to OpenAIProvider with base_url."""
+class TestOllamaSettings:
+    """get_ollama_settings should read from config or return defaults."""
 
-    def test_ollama_creates_openai_provider(self):
+    def test_defaults_without_config(self):
+        s = get_ollama_settings(None)
+        assert s["host"] == "http://localhost:11434"
+        assert s["model"] == "qwen3.5:9b-q8_0"
+        assert s["max_tokens"] == 1000
+
+    def test_reads_from_config(self):
         cfg = configparser.ConfigParser()
         cfg["ollama"] = {
-            "host": "http://localhost:11434",
-            "model": "qwen3.5:9b-q8_0",
-        }
-        provider = create_provider_from_config(cfg, "ollama")
-        assert isinstance(provider, OpenAIProvider)
-        assert "localhost:11434" in provider.base_url
-
-    def test_lmstudio_creates_openai_provider(self):
-        cfg = configparser.ConfigParser()
-        cfg["lmstudio"] = {
-            "host": "http://localhost:1234",
-            "model": "local-model",
-        }
-        provider = create_provider_from_config(cfg, "lmstudio")
-        assert isinstance(provider, OpenAIProvider)
-        assert "localhost:1234" in provider.base_url
-
-    def test_max_tokens_read_from_config(self):
-        cfg = configparser.ConfigParser()
-        cfg["ollama"] = {
-            "host": "http://localhost:11434",
-            "model": "qwen3.5:9b-q8_0",
+            "host": "http://myhost:9999",
+            "model": "llama3",
             "max_tokens": "2048",
         }
-        provider = create_provider_from_config(cfg, "ollama")
-        assert provider.max_tokens == 2048
+        s = get_ollama_settings(cfg)
+        assert s["host"] == "http://myhost:9999"
+        assert s["model"] == "llama3"
+        assert s["max_tokens"] == 2048
 
-
-class TestProviderFactoryCleanup:
-    """create_provider should no longer accept 'ollama', 'lmstudio', or 'llamacpp'."""
-
-    def test_ollama_not_in_factory(self):
-        with pytest.raises(ValueError):
-            create_provider("ollama")
-
-    def test_lmstudio_not_in_factory(self):
-        with pytest.raises(ValueError):
-            create_provider("lmstudio")
-
-    def test_llamacpp_not_in_factory(self):
-        with pytest.raises(ValueError):
-            create_provider("llamacpp")
-
-    def test_openai_still_works(self):
-        p = create_provider("openai", api_key="test")
-        assert isinstance(p, OpenAIProvider)
+    def test_partial_config_uses_defaults(self):
+        cfg = configparser.ConfigParser()
+        cfg["ollama"] = {"model": "custom-model"}
+        s = get_ollama_settings(cfg)
+        assert s["host"] == "http://localhost:11434"
+        assert s["model"] == "custom-model"
+        assert s["max_tokens"] == 1000

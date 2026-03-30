@@ -89,16 +89,13 @@ class TestUpdateConfig:
 
         cfg = configparser.ConfigParser()
         cfg.read(config_path)
-        assert cfg.get("DEFAULT", "default_provider") == "ollama"
         assert cfg.get("ollama", "model") == "qwen3.5:9b-q8_0"
         assert cfg.get("ollama", "host") == DEFAULT_HOST
 
     def test_updates_existing_config(self, tmp_path):
         config_path = str(tmp_path / "config.ini")
-        # Write an existing config with openai default
+        # Write an existing config
         cfg = configparser.ConfigParser()
-        cfg["DEFAULT"] = {"default_provider": "openai"}
-        cfg["openai"] = {"api_key": "sk-test", "model": "gpt-4"}
         cfg["ollama"] = {"host": DEFAULT_HOST, "model": "llama2"}
         with open(config_path, "w") as f:
             cfg.write(f)
@@ -107,7 +104,4 @@ class TestUpdateConfig:
 
         cfg2 = configparser.ConfigParser()
         cfg2.read(config_path)
-        assert cfg2.get("DEFAULT", "default_provider") == "ollama"
         assert cfg2.get("ollama", "model") == "qwen3.5:9b-q8_0"
-        # OpenAI section preserved
-        assert cfg2.get("openai", "api_key") == "sk-test"

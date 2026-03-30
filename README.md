@@ -4,7 +4,7 @@ A flexible, provider-agnostic AI-powered text RPG system with true dice mechanic
 
 ## Features
 
-- **Multiple LLM Providers**: Works with Claude, OpenAI, Ollama, LM Studio, or any custom provider
+- **Local LLM**: Runs entirely on your machine via Ollama (no API keys needed)
 - **Fast Startup**: Optimized lazy initialization for instant game start
 - **True Random Dice Rolling**: Uses Python's random module for genuine randomness
 - **Character Management**: Create and track PCs and NPCs with stats, HP, inventory, and motivations
@@ -48,8 +48,7 @@ pip install -e .
 cp config.ini.example config.ini
 
 # Edit config.ini and set your preferred provider
-# Set default_provider = openai, claude, ollama, lmstudio, or mock
-# Add your API keys if using Claude or OpenAI
+# Set default_provider = ollama, lmstudio, or mock
 ```
 
 ### 3. Run the Game
@@ -63,10 +62,7 @@ python run.py --setup -m qwen3.5:9b-q8_0   # Specify model
 
 ### Available Providers
 
-See `PROVIDERS.md` for detailed setup instructions for each provider:
-- **Claude** - High quality, requires API key
-- **OpenAI** - Various models (GPT-4, GPT-3.5), requires API key  
-- **Ollama** - Free local models, no API key
+- **Ollama** - Free local models, no API key (default)
 - **LM Studio** - Free local models with GUI
 - **Mock** - No AI, for testing mechanics
 
@@ -85,11 +81,7 @@ class LLMProvider(ABC):
 
 ### Available Providers
 
-**Cloud Providers:**
-- `ClaudeProvider` - Anthropic Claude API
-- `OpenAIProvider` - OpenAI GPT models (also used for Ollama & LM Studio via `base_url`)
-
-**Testing:**
+- `OllamaProvider` - Talks directly to Ollama/LM Studio via native HTTP API (no SDK needed)
 - `MockProvider` - No AI, for testing mechanics
 
 See `llm_providers.py` for implementation details.
