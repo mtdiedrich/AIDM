@@ -5,7 +5,7 @@ Configuration management for AI Dungeon Master
 import configparser
 import os
 from typing import Optional
-from .llm_providers import create_provider, LLMProvider
+from .llm_providers import create_provider, LLMProvider, OpenAIProvider
 
 
 def load_config(config_file: str = 'config.ini') -> Optional[configparser.ConfigParser]:
@@ -28,38 +28,34 @@ def create_provider_from_config(config: Optional[configparser.ConfigParser], pro
         return create_provider(
             'claude',
             api_key=config.get('claude', 'api_key', fallback=None),
-            model=config.get('claude', 'model', fallback='claude-sonnet-4-20250514')
+            model=config.get('claude', 'model', fallback='claude-sonnet-4-20250514'),
+            max_tokens=config.getint('claude', 'max_tokens', fallback=1000),
         )
     
     elif provider_name == 'openai':
         return create_provider(
             'openai',
             api_key=config.get('openai', 'api_key', fallback=None),
-            model=config.get('openai', 'model', fallback='gpt-4')
+            model=config.get('openai', 'model', fallback='gpt-4'),
+            max_tokens=config.getint('openai', 'max_tokens', fallback=1000),
         )
     
     elif provider_name == 'ollama':
-        return create_provider(
-            'ollama',
-            host=config.get('ollama', 'host', fallback='http://localhost:11434'),
+        host = config.get('ollama', 'host', fallback='http://localhost:11434')
+        return OpenAIProvider(
+            base_url=f"{host.rstrip('/')}/v1",
+            api_key="ollama",
             model=config.get('ollama', 'model', fallback='llama2'),
-            num_ctx=config.getint('ollama', 'num_ctx', fallback=4096),
+            max_tokens=config.getint('ollama', 'max_tokens', fallback=1000),
         )
     
     elif provider_name == 'lmstudio':
-        return create_provider(
-            'lmstudio',
-            host=config.get('lmstudio', 'host', fallback='http://localhost:1234'),
-            model=config.get('lmstudio', 'model', fallback='local-model')
-        )
-    
-    elif provider_name == 'llamacpp':
-        return create_provider(
-            'llamacpp',
-            model_path=config.get('llamacpp', 'model_path', fallback='models/model.gguf'),
-            n_ctx=config.getint('llamacpp', 'n_ctx', fallback=4096),
-            n_gpu_layers=config.getint('llamacpp', 'n_gpu_layers', fallback=-1),
-            flash_attn=config.getboolean('llamacpp', 'flash_attn', fallback=True),
+        host = config.get('lmstudio', 'host', fallback='http://localhost:1234')
+        return OpenAIProvider(
+            base_url=f"{host.rstrip('/')}/v1",
+            api_key="lm-studio",
+            model=config.get('lmstudio', 'model', fallback='local-model'),
+            max_tokens=config.getint('lmstudio', 'max_tokens', fallback=1000),
         )
     
     else:  # mock or fallback
