@@ -2,6 +2,7 @@
 
 import configparser
 import os
+import urllib.error
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -49,32 +50,35 @@ class TestInstallOllama:
 
 class TestCheckOllamaRunning:
     def test_returns_true_when_server_up(self):
-        with patch("aidm.setup.requests.get") as mock_get:
-            mock_get.return_value = MagicMock(status_code=200)
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("aidm.setup.urllib.request.urlopen", return_value=mock_resp):
             assert check_ollama_running(DEFAULT_HOST) is True
 
     def test_returns_false_on_connection_error(self):
-        import requests as _req
-        with patch("aidm.setup.requests.get", side_effect=_req.ConnectionError):
+        with patch("aidm.setup.urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
             assert check_ollama_running(DEFAULT_HOST) is False
 
 
 class TestPullModel:
     def test_success(self):
         mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.iter_lines.return_value = [
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.__iter__ = lambda s: iter([
             b'{"status":"pulling manifest"}',
             b'{"status":"success"}',
-        ]
-        with patch("aidm.setup.requests.post", return_value=mock_resp):
+        ])
+        with patch("aidm.setup.urllib.request.urlopen", return_value=mock_resp):
             assert pull_model("qwen3.5:9b-q8_0", DEFAULT_HOST) is True
 
     def test_failure_on_error(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 404
-        mock_resp.text = "not found"
-        with patch("aidm.setup.requests.post", return_value=mock_resp):
+        with patch("aidm.setup.urllib.request.urlopen", side_effect=urllib.error.HTTPError(
+            url="", code=404, msg="not found", hdrs=None, fp=None
+        )):
             assert pull_model("nonexistent:model", DEFAULT_HOST) is False
 
 

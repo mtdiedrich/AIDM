@@ -12,8 +12,6 @@ from .llm_providers import (
     LLMProvider,
     ClaudeProvider,
     OpenAIProvider,
-    OllamaProvider,
-    LMStudioProvider,
     MockProvider,
     create_provider
 )
@@ -26,8 +24,6 @@ __all__ = [
     'LLMProvider',
     'ClaudeProvider',
     'OpenAIProvider',
-    'OllamaProvider',
-    'LMStudioProvider',
     'MockProvider',
     'create_provider',
 ]

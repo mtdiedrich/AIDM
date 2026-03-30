@@ -26,6 +26,23 @@ STATIC_DIR = Path(__file__).parent / "static"
 app = FastAPI(title="AI Dungeon Master")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# --- Input validation ---
+
+MAX_NAME_LEN = 50
+MAX_DESC_LEN = 500
+MAX_TEXT_LEN = 2000
+MAX_LOC_LEN = 200
+
+
+def _validate_ws_field(value, max_len: int, default: str = "") -> str:
+    """Sanitise a WebSocket input field: strip, truncate, or return default."""
+    if not value or not isinstance(value, str):
+        return default
+    value = value.strip()
+    if not value:
+        return default
+    return value[:max_len]
+
 
 def _create_dm() -> UniversalDM:
     """Create a DM instance from config.ini."""
@@ -42,11 +59,11 @@ def _create_dm() -> UniversalDM:
 dm: UniversalDM | None = None
 
 
-def _get_dm() -> UniversalDM:
+async def _get_dm() -> UniversalDM:
     global dm
     if dm is None:
         log.info("First request — initializing DM (model will load now)...")
-        dm = _create_dm()
+        dm = await asyncio.to_thread(_create_dm)
         log.info("DM ready.")
     return dm
 
@@ -61,9 +78,8 @@ async def health():
     return {"status": "ok", "dm_loaded": dm is not None}
 
 
-def _state_snapshot() -> dict:
+def _state_snapshot(game: UniversalDM) -> dict:
     """Return a JSON-safe snapshot of the current game state."""
-    game = _get_dm()
     return {
         "characters": {
             name: char.to_dict() for name, char in game.state.characters.items()
@@ -79,10 +95,10 @@ def _state_snapshot() -> dict:
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     log.info("WebSocket connected")
-    game = _get_dm()
+    game = await _get_dm()
 
     # Send initial state
-    await ws.send_json({"type": "state", "data": _state_snapshot()})
+    await ws.send_json({"type": "state", "data": _state_snapshot(game)})
 
     try:
         while True:
@@ -93,14 +109,14 @@ async def websocket_endpoint(ws: WebSocket):
 
             if msg_type == "load_game":
                 if game.state.load():
-                    await ws.send_json({"type": "state", "data": _state_snapshot()})
+                    await ws.send_json({"type": "state", "data": _state_snapshot(game)})
                     await ws.send_json({"type": "system", "text": "Game loaded."})
                 else:
                     await ws.send_json({"type": "system", "text": "No saved game found."})
 
             elif msg_type == "new_game":
-                name = msg.get("name", "Hero")
-                desc = msg.get("description", "")
+                name = _validate_ws_field(msg.get("name"), MAX_NAME_LEN, "Hero")
+                desc = _validate_ws_field(msg.get("description"), MAX_DESC_LEN)
                 # Reset DM state
                 game.state = GameState()
                 game.conversation = []
@@ -112,11 +128,14 @@ async def websocket_endpoint(ws: WebSocket):
                     hp=23, max_hp=23, is_player=True, description=desc,
                 )
                 game.state.add_character(player)
-                location = msg.get("location", "Unknown Lands")
-                location_desc = msg.get("location_description", "A mysterious place where your adventure begins.")
+                location = _validate_ws_field(msg.get("location"), MAX_LOC_LEN, "Unknown Lands")
+                location_desc = _validate_ws_field(
+                    msg.get("location_description"), MAX_LOC_LEN,
+                    "A mysterious place where your adventure begins.",
+                )
                 game.state.add_location(location, location_desc, npcs=[], exits={})
                 game.state.current_location = location
-                await ws.send_json({"type": "state", "data": _state_snapshot()})
+                await ws.send_json({"type": "state", "data": _state_snapshot(game)})
                 await ws.send_json({"type": "system", "text": f"New game started for {name}."})
 
             elif msg_type == "save":
@@ -124,7 +143,7 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json({"type": "system", "text": "Game saved."})
 
             elif msg_type == "action":
-                text = msg.get("text", "").strip()
+                text = _validate_ws_field(msg.get("text"), MAX_TEXT_LEN)
                 if not text:
                     continue
                 # Stream events from the DM
@@ -137,7 +156,7 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif msg_type == "edit_action":
                 turn_index = msg.get("turn_index")
-                new_text = msg.get("text", "").strip()
+                new_text = _validate_ws_field(msg.get("text"), MAX_TEXT_LEN)
                 if turn_index is None or not new_text:
                     continue
                 game.truncate_to_turn(turn_index)
@@ -150,12 +169,12 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif msg_type == "edit_response":
                 turn_index = msg.get("turn_index")
-                new_text = msg.get("text", "").strip()
+                new_text = _validate_ws_field(msg.get("text"), MAX_TEXT_LEN)
                 if turn_index is None or not new_text:
                     continue
                 game.edit_turn(turn_index, new_text)
                 await ws.send_json({"type": "system", "text": "Response updated. History truncated."})
-                await ws.send_json({"type": "state", "data": _state_snapshot()})
+                await ws.send_json({"type": "state", "data": _state_snapshot(game)})
 
     except WebSocketDisconnect:
         log.info("WebSocket disconnected")

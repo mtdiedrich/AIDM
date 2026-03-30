@@ -31,8 +31,7 @@ AIDM/
 ├── run.py                 # CLI entry point
 ├── run_web.py             # Web UI entry point
 ├── config.ini             # Runtime configuration
-├── requirements.txt       # Python dependencies
-├── pyproject.toml         # Project metadata
+├── pyproject.toml         # Project metadata & dependencies
 └── README.md              # This file
 ```
 
@@ -41,7 +40,7 @@ AIDM/
 ### 1. Install Dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ### 2. Configure Provider
@@ -73,7 +72,7 @@ python run.py --setup -m qwen3.5:9b-q8_0   # Specify model
 python run_web.py
 ```
 
-### Provider Setup
+### Available Providers
 
 See `PROVIDERS.md` for detailed setup instructions for each provider:
 - **Claude** - High quality, requires API key
@@ -120,11 +119,7 @@ class LLMProvider(ABC):
 
 **Cloud Providers:**
 - `ClaudeProvider` - Anthropic Claude API
-- `OpenAIProvider` - OpenAI GPT models
-
-**Local Providers:**  
-- `OllamaProvider` - Local Ollama models
-- `LMStudioProvider` - LM Studio local server
+- `OpenAIProvider` - OpenAI GPT models (also used for Ollama & LM Studio via `base_url`)
 
 **Testing:**
 - `MockProvider` - No AI, for testing mechanics
