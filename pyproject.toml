@@ -28,7 +28,6 @@ dev = [
 
 [project.scripts]
 aidm = "run:main"
-aidm-web = "run_web:main"
 
 [tool.black]
 line-length = 100

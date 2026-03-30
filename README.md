@@ -26,10 +26,8 @@ AIDM/
 │   ├── setup.py           # Ollama setup helpers
 │   └── web.py             # FastAPI web UI backend
 ├── docs/                  # Documentation
-│   └── SAVE_LOAD_GUIDE.md
 ├── tests/                 # Unit tests
-├── run.py                 # CLI entry point
-├── run_web.py             # Web UI entry point
+├── run.py                 # Entry point (web server)
 ├── config.ini             # Runtime configuration
 ├── pyproject.toml         # Project metadata & dependencies
 └── README.md              # This file
@@ -56,20 +54,11 @@ cp config.ini.example config.ini
 
 ### 3. Run the Game
 
-**CLI mode (uses config.ini):**
 ```bash
-python run.py
-```
-
-**With Ollama auto-setup:**
-```bash
-python run.py --setup
+python run.py                              # Start on http://localhost:8000
+python run.py --port 3000                  # Custom port
+python run.py --setup                      # Set up Ollama first, then start
 python run.py --setup -m qwen3.5:9b-q8_0   # Specify model
-```
-
-**Web UI mode:**
-```bash
-python run_web.py
 ```
 
 ### Available Providers
@@ -81,31 +70,10 @@ See `PROVIDERS.md` for detailed setup instructions for each provider:
 - **LM Studio** - Free local models with GUI
 - **Mock** - No AI, for testing mechanics
 
-### Commands
-
-In-game commands:
-- Type actions naturally (placeholder response for now)
-- `roll d20` - Roll a d20
-- `roll 3d6+2` - Roll 3d6 with +2 modifier
-- `check strength 15` - Make a strength check against DC 15
-- `character` - View character sheet
-- `state` - View game state
-- `quit` - Save and exit
-
 ## Architecture
 
 ### Multi-Provider System
 The system uses a provider abstraction that allows any LLM to act as DM:
-
-```python
-from aidm.llm_providers import create_provider
-from aidm.dm import UniversalDM
-
-# Use any provider
-provider = create_provider('claude')  # or 'openai', 'ollama', etc.
-dm = UniversalDM(provider)
-dm.run()
-```
 
 Providers implement a simple interface:
 ```python
@@ -179,11 +147,6 @@ class MyCustomProvider(LLMProvider):
     def get_name(self) -> str:
         return "My Custom LLM"
 
-# Use it
-from aidm.dm import UniversalDM
-provider = MyCustomProvider(api_key="...")
-dm = UniversalDM(provider)
-dm.run()
 ```
 
 Then add it to `create_provider()` in `aidm/llm_providers.py` for easy access.
