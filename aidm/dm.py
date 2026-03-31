@@ -74,6 +74,11 @@ class UniversalDM:
         except Exception as e:
             yield f"[Error calling Ollama: {e}]"
 
+    def generate_sync(self, system_prompt: str, user_message: str,
+                       conversation_history: list | None = None) -> str:
+        """Non-streaming LLM call. Returns the full response as a string."""
+        return "".join(self.generate_stream(system_prompt, user_message, conversation_history))
+
     def get_display_name(self) -> str:
         return f"Ollama ({self.model})"
         
@@ -110,6 +115,10 @@ COMBAT FLOW:
 Example: "Your sword misses (roll failed). The goblin seizes the opening and lunges at you. ROLL: goblin dexterity DC 13 | attacking"
 
 NPC CREATION:
+When you introduce a named NPC for the FIRST time, you MUST include an NPC: line.
+This applies to ALL named characters — merchants, guards, quest-givers, enemies, everyone.
+If a player asks you to "create" or "make" a character, you MUST emit an NPC: line.
+Do NOT introduce a named NPC in your narrative without an NPC: line. No exceptions.
 Use this EXACT format:
 NPC: [name] | [brief description] | [motivation]
 Example: NPC: Grimwald | rotund merchant with silver rings | maximize profit
@@ -127,6 +136,18 @@ Example: THINK: Grimwald | This adventurer seems gullible... I could double the 
 Use 1-2 THINK lines per response for key NPCs/PCs reacting to events. Keep thoughts brief.
 
 Keep responses under 200 words. Be descriptive but concise."""
+
+    def _npc_followup_prompt(self) -> str:
+        """Build a follow-up prompt asking the LLM to emit NPC: lines for any new characters."""
+        known = [c.name for c in self.state.characters.values()]
+        known_str = ", ".join(known) if known else "(none)"
+        return (
+            "Review your last response. Characters already in the game state: "
+            f"{known_str}.\n"
+            "If you introduced any NEW named NPCs not listed above, emit an NPC: line "
+            "for each one now. Use the format: NPC: [name] | [description] | [motivation]\n"
+            "If no new NPCs were introduced, respond with exactly: NONE"
+        )
 
     def build_context(self, player_action: str) -> str:
         """Build context for the LLM including game state"""
@@ -393,6 +414,29 @@ Keep responses under 200 words. Be descriptive but concise."""
             conversation_for_llm.append({"role": "user", "content": results_text})
             conversation_for_llm.append({"role": "assistant", "content": follow_up})
             current_response = follow_up
+
+        # --- NPC follow-up: catch named NPCs the LLM forgot to tag ---
+        all_commands_so_far = []
+        tmp_response = current_response
+        while True:
+            _, cmds = self.parse_commands(tmp_response)
+            if not cmds:
+                break
+            all_commands_so_far.extend(cmds)
+            tmp_response = ""
+
+        had_npc_commands = any(c["type"] == "npc" for c in all_commands_so_far)
+        if not had_npc_commands:
+            followup_prompt = self._npc_followup_prompt()
+            followup_resp = self.generate_sync(
+                system_prompt, followup_prompt, conversation_for_llm
+            )
+            _, npc_commands = self.parse_commands(followup_resp)
+            npc_commands = [c for c in npc_commands if c["type"] == "npc"]
+            if npc_commands:
+                npc_results = self.execute_commands(npc_commands)
+                for result in npc_results:
+                    yield {"type": "command", "subtype": "npc", "text": result}
 
         # Update state
         self.state.add_to_history(player_action)
