@@ -64,6 +64,7 @@ AIDM/
 │   ├── test_providers.py         # DM init, config helpers, model resolution
 │   ├── test_setup.py             # Ollama setup: install, pull, config update, GGUF import
 │   ├── test_think.py             # THINK command parsing and execution
+│   ├── test_turns.py             # Turn-based system: turn order, thoughts, events
 │   └── test_web_validation.py    # WebSocket input sanitization
 ├── docs/specs/             # Feature/refactor specs (design docs, not runnable)
 └── models/                 # Local GGUF model files (gitignored, large)
@@ -75,7 +76,7 @@ AIDM/
 `run.py` → `uvicorn` → `aidm.web:app` (FastAPI) → WebSocket `/ws` → `UniversalDM`
 
 ### Key Classes
-- **`UniversalDM`** (`dm.py`): The main game engine. Builds context, streams LLM responses, parses structured commands (ROLL, NPC, DAMAGE, HEAL, THINK), executes them against game state. Has `get_response_events()` async generator for the web UI.
+- **`UniversalDM`** (`dm.py`): The main game engine. Builds context, streams LLM responses, parses structured commands (ROLL, NPC, DAMAGE, HEAL, THINK), executes them against game state. Uses turn-based flow: planning call → per-character turns with optional NPC thinking → streamed narration. Has `get_response_events()` async generator for the web UI.
 - **`GameState`** (`gamestate.py`): Manages characters, locations, quests, history, combat state. Persists to `gamestate.json`.
 - **`Character`** (`gamestate.py`): PC/NPC with D&D-style stats, HP, inventory, motivations.
 - **`DiceRoller`** (`dice.py`): True random dice rolls with modifiers and DC checks.
@@ -90,7 +91,14 @@ The DM class parses these structured commands from LLM output:
 - `THINK: [character] | [inner thought]`
 
 ### WebSocket Protocol
-Messages are JSON with a `type` field. Inbound: `new_game`, `load_game`, `save`, `action`, `edit_action`, `edit_response`. Outbound: `token`, `narrative_replace`, `narrative_done`, `command`, `thought`, `state`, `system`, `error`, `done`.
+Messages are JSON with a `type` field. Inbound: `new_game`, `load_game`, `save`, `action`, `edit_action`, `edit_response`. Outbound: `loading`, `turn_start`, `thinking`, `thinking_done`, `token`, `narrative_replace`, `narrative_done`, `command`, `thought`, `state`, `system`, `error`, `done`.
+
+### Turn-Based Flow
+Each player action triggers a turn-based round:
+1. `loading` — hourglass indicator
+2. LLM planning call determines turn order (player first, then NPCs)
+3. Per character: `turn_start` → (NPCs: `thinking` → LLM thought call → `thinking_done`) → streamed `token`s → `narrative_replace` → `narrative_done` → `command`s
+4. `state` + `done` — finalize round
 
 ### Input Validation
 All WebSocket string inputs go through `_validate_ws_field()` with length limits: name (50), description (500), text (2000), location (200).

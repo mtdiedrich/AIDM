@@ -360,6 +360,109 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: #ffffff20; border-radius: 3px; }
   ::-webkit-scrollbar-thumb:hover { background: #ffffff40; }
+
+  /* ---- Turn boxes ---- */
+  .turn-box {
+    background: var(--surface);
+    border: 1px solid #ffffff10;
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+  .turn-box-header {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--gold);
+    background: #ffffff08;
+    border-bottom: 1px solid #ffffff10;
+  }
+  .turn-box-header.player-turn { color: var(--blue); }
+  .turn-box-content {
+    padding: 10px 14px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    min-height: 1.5em;
+  }
+  .turn-command {
+    color: var(--green);
+    font-size: 13px;
+    font-family: 'Consolas', monospace;
+    padding: 4px 12px;
+    margin: 0 0 4px;
+    background: #1a2a1a;
+    border-left: 3px solid var(--green);
+  }
+
+  /* ---- Thought bubble inside turn box ---- */
+  .thought-bubble {
+    padding: 6px 14px;
+    color: var(--thought);
+    font-style: italic;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #b08cff08;
+    border-bottom: 1px solid #ffffff08;
+  }
+  .thought-bubble .thought-icon { font-style: normal; }
+
+  /* ---- Thinking animation ---- */
+  .thinking-indicator {
+    padding: 6px 14px;
+    color: var(--thought);
+    font-style: italic;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #b08cff08;
+    border-bottom: 1px solid #ffffff08;
+  }
+  .thinking-dots::after {
+    content: '';
+    animation: dotwave 1.4s steps(4, end) infinite;
+  }
+  @keyframes dotwave {
+    0%  { content: ''; }
+    25% { content: '.'; }
+    50% { content: '..'; }
+    75% { content: '...'; }
+  }
+
+  /* ---- Loading hourglass ---- */
+  .loading-bubble {
+    align-self: flex-start;
+    padding: 12px 16px;
+    font-size: 22px;
+    background: var(--surface);
+    border: 1px solid #ffffff10;
+    border-radius: var(--radius);
+  }
+  .loading-bubble .hourglass {
+    display: inline-block;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  /* ---- Round container ---- */
+  .round-container {
+    max-width: 85%;
+  }
+  .round-content {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
 </style>
 </head>
 <body>
@@ -419,10 +522,11 @@
 
   let ws;
   let waiting = false;
-  let currentDmBubble = null;  // the msg <div> we append streaming tokens to
-  let currentDmWrapper = null; // the wrapper around the current DM bubble
-  let lastDmBubble = null;     // last finalized DM bubble (for edit tracking)
-  let lastDmWrapper = null;
+  let roundContainer = null;     // wrapper for all turn boxes in current round
+  let roundContentEl = null;     // the round-content div (msgEl for edit tracking)
+  let currentTurnBox = null;     // current character's turn box
+  let currentTurnContent = null; // content area in current turn box
+  let loadingBubble = null;      // hourglass element
   let turn = 0;
   let gameState = {};
   let thoughts = {};  // {charName: [{turn, text}]}
@@ -457,35 +561,107 @@
   // ---- Event handling ----
   function handleEvent(ev) {
     switch (ev.type) {
-      case 'token':
-        if (!currentDmBubble) {
-          const { wrapper, msgEl } = addMessageWithActions('', 'dm');
-          currentDmBubble = msgEl;
-          currentDmWrapper = wrapper;
-        }
-        currentDmBubble.textContent += ev.text;
+      case 'loading':
+        loadingBubble = document.createElement('div');
+        loadingBubble.className = 'loading-bubble';
+        loadingBubble.innerHTML = '<span class="hourglass">⏳</span>';
+        messagesEl.appendChild(loadingBubble);
         scrollDown();
         break;
 
-      case 'narrative_replace':
-        // Replace the streamed DM bubble with cleaned text
-        if (currentDmBubble) {
-          currentDmBubble.textContent = ev.text;
+      case 'turn_start':
+        // Remove hourglass
+        if (loadingBubble) {
+          loadingBubble.remove();
+          loadingBubble = null;
+        }
+        // Create round container on first turn of the round
+        if (!roundContainer) {
+          roundContainer = document.createElement('div');
+          roundContainer.className = 'msg-wrapper dm round-container';
+          roundContentEl = document.createElement('div');
+          roundContentEl.className = 'round-content';
+          roundContainer.appendChild(roundContentEl);
+          messagesEl.appendChild(roundContainer);
+        }
+        // Create turn box
+        currentTurnBox = document.createElement('div');
+        currentTurnBox.className = 'turn-box';
+        const header = document.createElement('div');
+        header.className = 'turn-box-header' + (ev.is_player ? ' player-turn' : '');
+        header.textContent = ev.character;
+        currentTurnBox.appendChild(header);
+        // Create content area
+        currentTurnContent = document.createElement('div');
+        currentTurnContent.className = 'turn-box-content';
+        currentTurnBox.appendChild(currentTurnContent);
+        roundContentEl.appendChild(currentTurnBox);
+        scrollDown();
+        break;
+
+      case 'thinking':
+        if (currentTurnBox) {
+          const indicator = document.createElement('div');
+          indicator.className = 'thinking-indicator';
+          indicator.innerHTML = '<span>💭</span> Thinking<span class="thinking-dots"></span>';
+          // Insert after header, before content
+          currentTurnBox.insertBefore(indicator, currentTurnContent);
           scrollDown();
         }
         break;
 
+      case 'thinking_done':
+        if (currentTurnBox) {
+          const indicator = currentTurnBox.querySelector('.thinking-indicator');
+          if (indicator) {
+            const thoughtDiv = document.createElement('div');
+            thoughtDiv.className = 'thought-bubble';
+            thoughtDiv.innerHTML = '<span class="thought-icon">💭</span> ' + esc(ev.text);
+            indicator.replaceWith(thoughtDiv);
+          }
+          // Also add to sidebar thought log
+          addThought(ev.character, ev.text);
+          scrollDown();
+        }
+        break;
+
+      case 'token':
+        // Append token to current turn content area
+        if (currentTurnBox && !currentTurnContent) {
+          // Follow-up narrative within same turn (e.g., after dice roll)
+          currentTurnContent = document.createElement('div');
+          currentTurnContent.className = 'turn-box-content';
+          currentTurnBox.appendChild(currentTurnContent);
+        }
+        if (currentTurnContent) {
+          currentTurnContent.textContent += ev.text;
+        }
+        scrollDown();
+        break;
+
+      case 'narrative_replace':
+        if (currentTurnContent) {
+          currentTurnContent.textContent = ev.text;
+        }
+        scrollDown();
+        break;
+
       case 'narrative_done':
-        // Close the current DM bubble so subsequent tokens create a new one
-        // Keep reference for done handler
-        lastDmBubble = currentDmBubble;
-        lastDmWrapper = currentDmWrapper;
-        currentDmBubble = null;
-        currentDmWrapper = null;
+        // Content finalized, clear content ref but keep turn box
+        // (commands or follow-up tokens may still target this turn box)
+        currentTurnContent = null;
         break;
 
       case 'command':
-        addMessage(ev.text, 'command');
+        if (currentTurnBox) {
+          const cmd = document.createElement('div');
+          cmd.className = 'turn-command';
+          cmd.textContent = ev.text;
+          currentTurnBox.appendChild(cmd);
+        } else {
+          addMessage(ev.text, 'command');
+        }
+        scrollDown();
         break;
 
       case 'thought':
@@ -503,6 +679,8 @@
 
       case 'error':
         addMessage('Error: ' + ev.text, 'system');
+        // Clean up loading state
+        if (loadingBubble) { loadingBubble.remove(); loadingBubble = null; }
         setWaiting(false);
         break;
 
@@ -513,25 +691,32 @@
           setupPlayerActions(pendingPlayerEntry);
           pendingPlayerEntry = null;
         }
-        // Use current bubble if still open, or last finalized one
-        const dmBubble = currentDmBubble || lastDmBubble;
-        const dmWrapper = currentDmWrapper || lastDmWrapper;
-        if (dmBubble) {
+        // Track the round as a DM message entry
+        if (roundContainer && roundContentEl) {
+          // Collect combined text from all turn content areas
+          const allText = Array.from(roundContentEl.querySelectorAll('.turn-box-content'))
+            .map(el => el.textContent).join('\n\n');
           const entry = {
             id: nextMsgId++,
             role: 'dm',
-            text: dmBubble.textContent,
+            text: allText,
             turnIndex: ev.assistant_turn,
-            wrapper: dmWrapper,
-            msgEl: dmBubble,
+            wrapper: roundContainer,
+            msgEl: roundContentEl,
           };
           messageLog.push(entry);
+          // Add edit actions
+          const actions = document.createElement('div');
+          actions.className = 'msg-actions';
+          roundContainer.appendChild(actions);
           setupDmActions(entry);
         }
-        currentDmBubble = null;
-        currentDmWrapper = null;
-        lastDmBubble = null;
-        lastDmWrapper = null;
+        // Clean up round state
+        roundContainer = null;
+        roundContentEl = null;
+        currentTurnBox = null;
+        currentTurnContent = null;
+        if (loadingBubble) { loadingBubble.remove(); loadingBubble = null; }
         setWaiting(false);
         break;
     }
@@ -842,6 +1027,11 @@
     messageLog = [];
     nextMsgId = 0;
     pendingPlayerEntry = null;
+    roundContainer = null;
+    roundContentEl = null;
+    currentTurnBox = null;
+    currentTurnContent = null;
+    loadingBubble = null;
     messagesEl.innerHTML = '';
     modal.classList.remove('open');
   });
