@@ -58,6 +58,7 @@ python run.py                              # Start on http://localhost:8000
 python run.py --port 3000                  # Custom port
 python run.py --setup                      # Set up Ollama first, then start
 python run.py --setup -m qwen3.5:9b-q8_0   # Specify model
+python run.py --setup --gguf https://huggingface.co/.../model-Q8_0.gguf  # Import a HuggingFace GGUF
 ```
 
 ### Available Providers
