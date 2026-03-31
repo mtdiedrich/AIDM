@@ -23,6 +23,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Set by run.py when --model is given; None means use config default
+model_override: str | None = None
+
 app = FastAPI(title="AI Dungeon Master")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -47,7 +50,7 @@ def _validate_ws_field(value, max_len: int, default: str = "") -> str:
 def _create_dm() -> UniversalDM:
     """Create a DM instance from config.ini."""
     config = load_config()
-    settings = get_ollama_settings(config)
+    settings = get_ollama_settings(config, model=model_override)
     log.info("Creating DM: %s @ %s", settings["model"], settings["host"])
     t0 = time.time()
     dm = UniversalDM(**settings)

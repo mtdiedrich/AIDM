@@ -195,8 +195,13 @@ def update_config(
     model: str,
     host: str = DEFAULT_HOST,
     config_path: str = DEFAULT_CONFIG,
+    alias: str = "",
 ) -> None:
-    """Write/update config.ini so the game uses Ollama with the given model."""
+    """Write/update config.ini so the game uses Ollama with the given model.
+
+    The model is added to [models] with the given *alias* (or derived from the
+    model name).  It is also set as the default.
+    """
     cfg = configparser.ConfigParser()
     if os.path.exists(config_path):
         cfg.read(config_path)
@@ -204,7 +209,18 @@ def update_config(
     if "ollama" not in cfg:
         cfg["ollama"] = {}
     cfg["ollama"]["host"] = host
-    cfg["ollama"]["model"] = model
+    # Remove legacy 'model' key if present
+    if cfg.has_option("ollama", "model"):
+        cfg.remove_option("ollama", "model")
+
+    if "models" not in cfg:
+        cfg["models"] = {}
+
+    if not alias:
+        # Derive a short alias: take the part before ':'  or the whole name
+        alias = model.split(":")[0] if ":" in model else model
+    cfg["models"][alias] = model
+    cfg["models"]["default"] = alias
 
     with open(config_path, "w") as f:
         cfg.write(f)
@@ -214,8 +230,9 @@ def run_setup(
     model: str = DEFAULT_MODEL,
     host: str = DEFAULT_HOST,
     config_path: str = DEFAULT_CONFIG,
+    gguf_url: Optional[str] = None,
 ) -> bool:
-    """Full setup flow: check Ollama → start server → pull model → update config."""
+    """Full setup flow: check Ollama → start server → pull/import model → update config."""
     print("=== AIDM Ollama Setup ===\n")
 
     # 1. Check / install Ollama
@@ -244,19 +261,35 @@ def run_setup(
             print("  Try running `ollama serve` manually in another terminal.")
             return False
 
-    # 3. Pull model
-    print(f"[3/4] Pulling model '{model}'...")
-    if model_exists(model, host):
-        print("  Model already available locally — skipping pull.")
-    else:
-        if not pull_model(model, host):
-            print("  Failed to pull the model.")
+    # 3. Pull or import model
+    if gguf_url:
+        print(f"[3/4] Importing GGUF from URL...")
+        try:
+            gguf_path = download_gguf(gguf_url)
+        except Exception as e:
+            print(f"  Download failed: {e}")
             return False
-        print("  Model ready.")
+
+        filename = os.path.basename(gguf_path)
+        model = derive_model_name(filename)
+        print(f"  Importing as '{model}'...")
+        if not import_gguf_to_ollama(gguf_path, model):
+            print("  Failed to import GGUF into Ollama.")
+            return False
+        print("  Model imported.")
+    else:
+        print(f"[3/4] Pulling model '{model}'...")
+        if model_exists(model, host):
+            print("  Model already available locally — skipping pull.")
+        else:
+            if not pull_model(model, host):
+                print("  Failed to pull the model.")
+                return False
+            print("  Model ready.")
 
     # 4. Update config
     print(f"[4/4] Updating {config_path}...")
-    update_config(model, host, config_path)
+    update_config(model, host, config_path, alias=model.split(":")[0] if ":" in model else model)
     print("  Config saved.")
 
     print("\n=== Setup complete! ===")
@@ -265,6 +298,82 @@ def run_setup(
     print(f"  Host     : {host}\n")
 
     return True
+
+
+# ------------------------------------------------------------------
+# GGUF import from HuggingFace
+# ------------------------------------------------------------------
+
+def normalize_hf_url(url: str) -> str:
+    """Convert a HuggingFace blob URL to a direct download (resolve) URL."""
+    return url.replace("/blob/main/", "/resolve/main/")
+
+
+def derive_model_name(filename: str) -> str:
+    """Derive a short Ollama model name from a GGUF filename."""
+    stem = filename.rsplit(".", 1)[0] if filename.endswith(".gguf") else filename
+    return stem.lower().replace("_", "-")
+
+
+def download_gguf(url: str, dest_dir: str = "models") -> str:
+    """Download a GGUF file from a URL to dest_dir. Returns local path."""
+    url = normalize_hf_url(url)
+    filename = url.rsplit("/", 1)[-1]
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_path = os.path.join(dest_dir, filename)
+
+    # Check remote size via initial request
+    req = urllib.request.Request(url, method="GET")
+    resp = urllib.request.urlopen(req)
+    remote_size = int(resp.headers.get("Content-Length", 0))
+
+    # Skip if local file already matches
+    if os.path.exists(dest_path) and os.path.getsize(dest_path) == remote_size:
+        resp.close()
+        print(f"  {filename} already exists ({remote_size:,} bytes) — skipping download.")
+        return dest_path
+
+    # Stream download
+    downloaded = 0
+    last_pct = -1
+    with open(dest_path, "wb") as f:
+        while True:
+            chunk = resp.read(1024 * 1024)  # 1 MB chunks
+            if not chunk:
+                break
+            f.write(chunk)
+            downloaded += len(chunk)
+            if remote_size:
+                pct = int(downloaded / remote_size * 100)
+                if pct != last_pct:
+                    print(f"\r  Downloading {filename}: {pct}%", end="", flush=True)
+                    last_pct = pct
+
+    resp.close()
+    print()  # newline after progress
+    return dest_path
+
+
+def import_gguf_to_ollama(gguf_path: str, model_name: str) -> bool:
+    """Import a local GGUF file into Ollama via `ollama create`."""
+    abs_path = os.path.abspath(gguf_path)
+    modelfile_path = abs_path + ".Modelfile"
+
+    try:
+        with open(modelfile_path, "w") as f:
+            f.write(f"FROM {abs_path}\n")
+
+        result = subprocess.run(
+            ["ollama", "create", model_name, "-f", modelfile_path],
+            timeout=300,
+        )
+        return result.returncode == 0
+    except Exception as e:
+        print(f"  Error importing GGUF: {e}")
+        return False
+    finally:
+        if os.path.exists(modelfile_path):
+            os.remove(modelfile_path)
 
 
 def main():
@@ -276,14 +385,23 @@ def main():
         "--model", "-m", default=DEFAULT_MODEL,
         help=f"Ollama model tag to pull (default: {DEFAULT_MODEL})",
     )
+    parser.add_argument(
+        "--gguf", default=None,
+        help="HuggingFace GGUF URL to download and import",
+    )
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"Ollama server URL (default: {DEFAULT_HOST})")
     parser.add_argument("--config", "-c", default=DEFAULT_CONFIG, help="Config file path")
 
     args = parser.parse_args()
 
+    if args.gguf and args.model != DEFAULT_MODEL:
+        print("Error: --gguf and --model are mutually exclusive.")
+        sys.exit(1)
+
     success = run_setup(
         model=args.model, host=args.host,
         config_path=args.config,
+        gguf_url=args.gguf,
     )
     sys.exit(0 if success else 1)
 
